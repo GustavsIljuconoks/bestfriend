@@ -1,0 +1,282 @@
+/* ── Fonts ─────────────────────────────────────────────────────────── */
+@import '@fontsource/instrument-serif/400.css';
+@import '@fontsource/instrument-serif/400-italic.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+/* ── Reset ─────────────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Design tokens — dark (primary) ────────────────────────────────── */
+:root,
+[data-theme='dark'] {
+  --bg-base: #15141a;
+  --bg-elevated: #1c1b22;
+  --bg-sidebar-tint: rgba(20, 19, 26, 0.55);
+  --bg-list: #1a1920;
+  --surface-1: #1f1e26;
+  --surface-2: #262530;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.1);
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --text-tertiary: rgba(255, 255, 255, 0.42);
+  --accent: #3a8dff;
+  --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent) 90%, white);
+  --danger: #e5484d;
+  --success: #46a758;
+  --warning: #e2a03f;
+
+  color-scheme: dark;
+}
+
+/* ── Design tokens — light ──────────────────────────────────────────── */
+[data-theme='light'] {
+  --bg-base: #f7f6f3;
+  --bg-elevated: #ffffff;
+  --bg-sidebar-tint: rgba(247, 246, 243, 0.65);
+  --bg-list: #fbfaf7;
+  --surface-1: #ffffff;
+  --surface-2: #f2f0ec;
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.1);
+  --text-primary: rgba(20, 18, 28, 0.92);
+  --text-secondary: rgba(20, 18, 28, 0.62);
+  --text-tertiary: rgba(20, 18, 28, 0.42);
+
+  color-scheme: light;
+}
+
+/* ── Typography tokens ──────────────────────────────────────────────── */
+:root {
+  --font-ui: -apple-system, 'SF Pro Text', 'SF Pro Display', system-ui, sans-serif;
+  --font-serif: 'Instrument Serif', Georgia, 'Times New Roman', serif;
+  --font-mono: 'Geist Mono', 'SF Mono', 'Fira Code', monospace;
+
+  --text-11: 11px;
+  --text-12: 12px;
+  --text-13: 13px;
+  --text-14: 14px;
+  --text-17: 17px;
+  --text-22: 22px;
+}
+
+/* ── Spacing / radii / motion tokens ────────────────────────────────── */
+:root {
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --spring-stiff: 320;
+  --spring-damp: 32;
+}
+
+/* ── Base ───────────────────────────────────────────────────────────── */
+html,
+body {
+  height: 100%;
+  background: transparent;
+  font-family: var(--font-ui);
+  font-size: var(--text-13);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  overflow: hidden;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+}
+
+/* ── App layout ─────────────────────────────────────────────────────── */
+.app-layout {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Sidebar ────────────────────────────────────────────────────────── */
+.sidebar {
+  width: 220px;
+  min-width: 200px;
+  max-width: 280px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar-tint);
+  border-right: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  position: relative;
+}
+
+.sidebar--collapsed {
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  border-right: none;
+}
+
+.sidebar-traffic-zone {
+  height: 52px;
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.sidebar-bottom {
+  padding: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-13);
+  color: var(--text-secondary);
+  text-decoration: none;
+  position: relative;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition: color 80ms ease, background 80ms ease;
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.nav-item--active {
+  color: var(--accent-text);
+}
+
+.nav-item-pill {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+.nav-item-accent-bar {
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.nav-item-label {
+  flex: 1;
+  font-size: var(--text-13);
+}
+
+.nav-item-count {
+  font-size: var(--text-11);
+  font-family: var(--font-ui);
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  padding: 1px 5px;
+  border-radius: 8px;
+  min-width: 16px;
+  text-align: center;
+}
+
+/* ── Content area ───────────────────────────────────────────────────── */
+.content-area {
+  flex: 1;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-base);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Route placeholder (empty state base) ──────────────────────────── */
+.route-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-tertiary);
+  padding: 40px;
+  text-align: center;
+}
+
+.route-placeholder h1 {
+  font-family: var(--font-serif);
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.route-placeholder p {
+  font-size: var(--text-13);
+  color: var(--text-secondary);
+  max-width: 320px;
+}
+
+/* ── Focus ring ─────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

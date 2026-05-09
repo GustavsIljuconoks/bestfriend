@@ -531,6 +531,175 @@ The model produces proposals only via OpenAI tool calls, with strict JSON schema
 - Error states across Library/Chat/Inbox.
 - Empty states with onboarding hints.
 
+## Detailed Todo List
+
+### Phase 0 — Bootstrap + Navigation
+- [x] Enable `corepack` and scaffold pnpm workspaces monorepo (`apps/desktop`, `packages/core`)
+- [x] Init `apps/desktop` with `electron-vite` template; configure TypeScript strict mode
+- [x] Set up `packages/core` as a separate TypeScript package with its own `tsconfig.json`
+- [x] Configure monorepo-level `pnpm-workspace.yaml` and root `package.json` scripts
+- [x] Install and configure `electron-builder` (macOS DMG target, `com.bestfriend` bundle id)
+- [x] Set up `BrowserWindow` with `titleBarStyle: 'hiddenInset'`, correct CSP headers
+- [x] Define initial domain types in `packages/core/domain/`: `Document`, `Chunk`, `Message`, `Proposal`, `Reminder`, `FeedItem`, `InboxItem`, `Settings`
+- [x] Create typed `WindowApi` interface in `packages/core/domain/ipc.ts` (all IPC endpoints)
+- [x] Implement `apps/desktop/src/preload/index.ts` — expose `window.api` via `contextBridge` only
+- [x] Wire a single no-op IPC round-trip (e.g. `ping/pong`) to verify bridge works end-to-end
+- [x] Scaffold renderer React app with `react-router-dom`: routes for `/library`, `/chat`, `/feed`, `/settings`
+- [x] Build persistent sidebar layout component (220 px, vibrancy, Phosphor Icons, active state)
+- [x] Add SF Pro, Instrument Serif, and Geist Mono fonts (bundled, no runtime fetch)
+- [x] Set up TanStack Query `QueryClient` provider and Zustand store boilerplate
+- [x] Verify `pnpm --filter @bestfriend/desktop dev` starts with HMR and no console errors
+
+### Phase 1 — Settings + Secrets + Connectivity
+- [ ] Design and implement `Settings` SQLite table + `user_profile` single-row table (migration 001)
+- [ ] Implement `safeStorage` wrapper in main process for OpenAI and Pinecone keys
+- [ ] Implement `getSettings` / `setSettings` IPC handlers (validate all fields in main)
+- [ ] Build Settings renderer screen: Profile section (name, role, timezone, tone, current projects)
+- [ ] Build Settings renderer section: API Keys (OpenAI, Pinecone) — inputs write via IPC, never stored in renderer state
+- [ ] Build Settings renderer section: Models (embeddings model, chat model, transcription model)
+- [ ] Build Settings renderer section: Retrieval knobs (topK_docs, topK_chat, chunk size, overlap)
+- [ ] Build Settings renderer section: Spend (per-day cap USD, pre-action confirm threshold display)
+- [ ] Implement `testConnections` IPC handler — verify OpenAI API key and Pinecone API key independently
+- [ ] Implement Pinecone client wrapper in `packages/core/providers/pinecone/` (create index if missing)
+- [ ] Implement OpenAI client wrapper in `packages/core/providers/openai/` (stub-safe, key optional)
+- [ ] Build "Test connections" UI button with per-service status pills and actionable error messages
+- [ ] Build "Auto-create Pinecone index" button (with dimension derived from selected embeddings model)
+- [ ] Initialize `usage_ledger` SQLite table (migration 002) with write helper
+
+### Phase 2 — Indexing (txt/md) + Collections
+- [ ] Implement `documents`, `chunks`, `folder_indexes`, `collections`, `document_collections` SQLite tables (migration 003)
+- [ ] Implement text/markdown parser in `packages/core/ingest/` → `DocumentText` canonical representation
+- [ ] Implement chunking algorithm in `packages/core/rag/chunker.ts` (paragraph merge + overlap)
+- [ ] Implement token estimation utility in `packages/core/util/tokens.ts`
+- [ ] Implement embeddings batch helper in `packages/core/providers/openai/embeddings.ts`
+- [ ] Implement Pinecone upsert with metadata in `packages/core/providers/pinecone/upsert.ts`
+- [ ] Implement `dropFiles` IPC handler — accepts file paths, starts ingestion job, returns `jobId`
+- [ ] Implement job runner in `apps/desktop/src/main/jobs/` — queue, progress events, error handling
+- [ ] Emit `jobEvents` progress IPC stream (file count, chunks indexed, estimated cost so far)
+- [ ] Write `usage_ledger` entries for every embeddings API call
+- [ ] Implement SHA-256 hasher in `packages/core/util/hash.ts`
+- [ ] Implement `listDocuments` IPC handler returning `DocumentSummary[]`
+- [ ] Implement `removeDocument` IPC handler — soft-delete SQLite rows + delete Pinecone vectors
+- [ ] Implement `reindexDocument` IPC handler — recompute chunks, re-embed, upsert
+- [ ] Implement Collections CRUD: `createCollection`, `renameCollection`, `deleteCollection`, `assignDocumentToCollection`
+- [ ] Build Library renderer screen: file/folder dropzone (react-dropzone), document list with status badges
+- [ ] Build document list item with chunk count, last-indexed timestamp, per-row action menu
+- [ ] Build Collections sidebar panel: list, create/rename/delete, click-to-filter list
+- [ ] Build pre-action cost-estimate confirm dialog (shows "≈ N chunks, ≈ $X")
+- [ ] Subscribe to `jobEvents` stream in renderer; show per-document progress bar
+- [ ] Build `addFolderIndex` + `pickFolder` IPC handlers; wire "Add folder" button
+- [ ] Implement `scanFolder` IPC handler (enumerate files, filter by globs, start ingestion jobs)
+- [ ] Add per-day spend-cap check in job runner (pause queue and post feed item when exceeded)
+
+### Phase 3 — RAG Chat with Streaming + Scoping
+- [ ] Implement `conversations` and `messages` SQLite tables (migration 004)
+- [ ] Implement `listConversations` / `createConversation` IPC handlers
+- [ ] Implement Pinecone multi-namespace query helper in `packages/core/providers/pinecone/query.ts`
+- [ ] Implement context assembly in `packages/core/rag/context.ts` (merge, de-dup, cap tokens, build Sources block)
+- [ ] Implement `sendMessage` IPC handler — full RAG pipeline (embed query → retrieve → assemble → stream chat)
+- [ ] Implement OpenAI streaming chat call in `packages/core/providers/openai/chat.ts`
+- [ ] Stream tokens to renderer via IPC push channel; accumulate in renderer without re-renders on every token
+- [ ] Persist assistant message + `retrieval_trace_json` to SQLite after stream completes
+- [ ] Embed user + assistant messages and upsert to `chat_history` Pinecone namespace after each turn
+- [ ] Write `usage_ledger` entries for every chat API call (tokens in + out + estimated cost)
+- [ ] Build Chat renderer screen: conversation list sidebar (left 280 px) + chat area (right flex)
+- [ ] Build chat message list with streaming token rendering (Instrument Serif prose, Geist Mono code)
+- [ ] Build chat composer: resizable textarea, send on Enter/Shift+Enter, disabled while streaming
+- [ ] Build Sources drawer: slide-in panel per assistant message, shows doc chunks + past-chat snippets with scores
+- [ ] Build collection scope selector in new-conversation flow (multi-select chips, "All" default)
+- [ ] Handle `chat_history` namespace filter in retrieval when conversation is scoped
+
+### Phase 4 — Proposals + Memories via Tool Calls
+- [ ] Define strict JSON schemas for `propose_reminder`, `propose_suggestion`, `remember_about_user` tools in `packages/core/rag/tools.ts`
+- [ ] Wire tool definitions into the `sendMessage` OpenAI call
+- [ ] Implement tool-call payload parser/validator in main process (reject malformed calls, log violations)
+- [ ] Implement `proposals` and `memories` SQLite tables (migration 005)
+- [ ] Write proposal rows from tool-call payloads (`proposed` status, confidence stored)
+- [ ] Write memory rows from `remember_about_user` calls; inject active memories into system prompt
+- [ ] Implement `listProposals`, `acceptProposal`, `rejectProposal` IPC handlers
+- [ ] Build ProposalCard component (confidence badge, title, details, Accept/Reject buttons)
+- [ ] Build Accept Reminder confirm dialog (editable title, date/time picker, recurrence selector)
+- [ ] Build "Memories captured" inline indicator in assistant message when memories were recorded
+- [ ] Build Settings > Memories section: list all memories with edit, pin, soft-delete
+- [ ] Inject soft-deleted memory IDs into system prompt ("do not re-record") on every chat call
+- [ ] Apply confidence threshold gate: only render proposals with `confidence >= threshold`
+
+### Phase 5 — Reminder Scheduler + Notifications
+- [ ] Implement `reminders` and `feed_items` SQLite tables (migration 006)
+- [ ] Implement reminder scheduler in `apps/desktop/src/main/scheduler/`: load on app start, set timers
+- [ ] Handle sleep/wake events (`powerMonitor`) — run catch-up for missed fire times on resume
+- [ ] Implement recurrence computation (daily/weekly/monthly next `due_at`) after firing
+- [ ] Implement native notification dispatch using Electron's `Notification` API
+- [ ] Add Snooze (10 min / 1 hr / tomorrow 9 am) and Done action buttons to notifications
+- [ ] Write `feed_items` row on every reminder fire (so missed notifications are recoverable)
+- [ ] Implement `listReminders` IPC handler (returning upcoming + snoozed)
+- [ ] Implement `listFeedItems` / `markFeedRead` IPC handlers
+- [ ] Build Feed renderer screen: unified list (reminder fired, indexing events, spend-cap notices)
+- [ ] Build Feed item component with per-type icon, Snooze/Done actions for reminder-fired items
+- [ ] Add unread pill badge to Feed nav item (count of unread `feed_items`)
+
+### Phase 6 — Folder Indexing Incremental + Spend Cap Enforcement
+- [ ] Extend `scanFolder` to compute SHA-256 per file and compare against stored `sha256` in `documents`
+- [ ] Skip unchanged files; reindex changed files (delete old vectors, re-embed new chunks)
+- [ ] Detect and handle deleted files: orphan documents marked `removed`, vectors deleted from Pinecone
+- [ ] Surface scan summary in Library (N new, N updated, N removed, N skipped)
+- [ ] Harden per-day spend cap: check cap before every job step (not just on job start)
+- [ ] Post a `spend_cap` `feed_items` row when cap is hit; include current spend + cap amount
+- [ ] Add "Resume today" override button in Feed for spend-cap notices
+- [ ] Build Settings > Spend section: show current daily spend, reset time, usage breakdown by kind
+
+### Phase 7 — PDF / DOCX + Audio Transcription + Voice Input
+- [ ] Implement PDF parser in `packages/core/ingest/pdf.ts` using `pdf-parse` or `pdfjs-dist`; preserve pageMap
+- [ ] Implement DOCX parser in `packages/core/ingest/docx.ts` using `mammoth`; preserve sectionMap
+- [ ] Add PDF and DOCX to ingestion pipeline file-type dispatch
+- [ ] Implement audio ingestion handler: detect audio MIME, call Whisper transcription, store transcript as fullText
+- [ ] Implement OpenAI Whisper wrapper in `packages/core/providers/openai/transcribe.ts`
+- [ ] Write `usage_ledger` entries for transcription (units = seconds, estimated cost)
+- [ ] Wire `quickCaptureVoice` IPC path to reuse the Whisper wrapper
+- [ ] Build push-to-talk mic button in chat composer: hold to record, release to transcribe, transcript fills textarea
+- [ ] Add audio file to MIME detection utility (`packages/core/util/mime.ts`)
+- [ ] Show transcription-in-progress spinner in composer while Whisper call is pending
+
+### Phase 8 — Quick-Capture + Inbox
+- [ ] Create quick-capture `BrowserWindow`: 480×240, frameless, `vibrancy: 'hud'`, always-on-top, 96 px from screen top
+- [ ] Register global `⌘⇧Space` hotkey to toggle capture window (`globalShortcut`)
+- [ ] Set up system tray icon: left-click → open capture window; right-click → context menu (status + quit)
+- [ ] Implement `openCaptureWindow` IPC handler; also callable from renderer
+- [ ] Implement `inbox_items` SQLite table (migration 007)
+- [ ] Implement `quickCaptureText` IPC handler (store to `inbox_items`, trigger lightweight pre-classification)
+- [ ] Implement `quickCaptureVoice` IPC handler (transcribe then store, trigger pre-classification)
+- [ ] Implement lightweight pre-classification call (small GPT call: returns suggested triage action + confidence)
+- [ ] Build quick-capture renderer: text input, mic button (voice), submit shortcut (Enter)
+- [ ] Implement `listInbox` / `triageInboxItem` IPC handlers
+- [ ] Build Inbox route in renderer: list of untriaged items, per-item triage action buttons (Reminder / Note / Chat / Dismiss)
+- [ ] Wire triage actions: `reminder` → create reminder dialog; `chat` → open new conversation with capture text pre-filled; `dismiss` → mark dismissed
+- [ ] Show `suggested_action_json` hint on each inbox card; let user override
+
+### Phase 9 — macOS Reminders Mirroring
+- [ ] Add Settings toggle for Reminders mirroring + list-name text field
+- [ ] Implement EventKit helper: write a small Swift CLI (or `osascript` wrapper) for create/update/cancel Reminders
+- [ ] Bundle helper binary with `electron-builder` `extraResources`
+- [ ] Implement permission request flow (EventKit entitlement); handle denial gracefully
+- [ ] Call helper from main process on `acceptProposal` when mirroring is enabled; store returned `eventkit_id`
+- [ ] Implement update path: if reminder is snoozed or cancelled, update the macOS Reminders item
+- [ ] Post a `feed_items` row if permission is denied explaining how to grant access
+- [ ] Add caveat note in Settings that marking done in macOS Reminders does not close Bestfriend reminder
+
+### Phase 10 — Onboarding + Polish
+- [ ] Design and build 5-step first-run onboarding flow (welcome → API keys → create first Collection → add a folder → send first message)
+- [ ] Detect first launch (empty `documents` table) and route to onboarding
+- [ ] Implement "Wipe all data" action: drop SQLite, clear both Pinecone namespaces, clear `safeStorage` keys
+- [ ] Add confirmation dialog (type "DELETE" to confirm) for "Wipe all data"
+- [ ] Build empty states for Library (no docs), Chat (no conversations), Feed (no items), Inbox (nothing to triage)
+- [ ] Build full error states across Library (indexing error), Chat (API error, offline), Inbox (transcription error)
+- [ ] Add motion transitions (Motion/react, spring `{ stiffness: 320, damping: 32 }`, `prefers-reduced-motion` guard)
+- [ ] Audit all BrowserWindow configs and IPC handlers against electron-security skill checklist
+- [ ] Verify `packages/core` has zero Electron imports (`tsc --noEmit` + grep)
+- [ ] Run `pnpm tsc --noEmit` across all packages; fix all type errors
+- [ ] Build final macOS `.dmg` with `electron-builder` and smoke-test on a clean machine
+
+---
+
 ## Test plan (detailed)
 - **Indexing correctness**:
   - index a folder with 10 docs; verify SQLite chunk count equals Pinecone vector count for that document.

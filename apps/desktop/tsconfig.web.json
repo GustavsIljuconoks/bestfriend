@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": ["./src/renderer/src/*"],
+      "@bestfriend/core": ["../../packages/core/src/index.ts"],
+      "@bestfriend/core/*": ["../../packages/core/src/*"]
+    }
+  },
+  "include": [
+    "src/renderer/**/*"
+  ]
+}

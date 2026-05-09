@@ -1,0 +1,17 @@
+{
+  "name": "bestfriend-monorepo",
+  "private": true,
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @bestfriend/desktop dev",
+    "build": "pnpm --filter @bestfriend/desktop build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,36 @@
+appId: com.bestfriend
+productName: Bestfriend
+copyright: "Copyright © 2026 Bestfriend"
+
+directories:
+  buildResources: resources
+  output: dist
+
+files:
+  - out/**/*
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  darkModeSupport: true
+  hardenedRuntime: true
+  entitlements: resources/entitlements.mac.plist
+  entitlementsInherit: resources/entitlements.mac.plist
+
+dmg:
+  contents:
+    - x: 410
+      y: 150
+      type: link
+      path: /Applications
+    - x: 130
+      y: 150
+      type: file
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
