@@ -4,6 +4,7 @@ import { app } from 'electron'
 import { runMigrations } from './migrate.js'
 import { migration001 } from './migrations/001_settings_and_profile.js'
 import { migration002 } from './migrations/002_usage_ledger.js'
+import { migration003 } from './migrations/003_documents_and_collections.js'
 
 let _db: Database.Database | null = null
 
@@ -22,7 +23,7 @@ export function initDb(): Database.Database {
   _db.pragma('foreign_keys = ON')
   _db.pragma('busy_timeout = 5000')
 
-  runMigrations(_db, [migration001, migration002])
+  runMigrations(_db, [migration001, migration002, migration003])
 
   return _db
 }

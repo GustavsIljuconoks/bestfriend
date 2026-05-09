@@ -1,5 +1,7 @@
 export * from './openai/client.js'
 export * from './openai/test.js'
+export * from './openai/embeddings.js'
 export * from './pinecone/client.js'
 export * from './pinecone/test.js'
 export * from './pinecone/index-management.js'
+export * from './pinecone/upsert.js'

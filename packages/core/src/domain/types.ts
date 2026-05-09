@@ -298,3 +298,10 @@ export interface UsageLedgerEntry {
   est_cost_usd: number
   occurred_at: string
 }
+
+export interface IndexingEstimate {
+  file_count: number
+  estimated_chunks: number
+  estimated_cost_usd: number
+  exceeds_threshold: boolean
+}

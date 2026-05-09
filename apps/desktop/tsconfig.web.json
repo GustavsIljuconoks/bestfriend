@@ -13,7 +13,7 @@
     "baseUrl": ".",
     "paths": {
       "@renderer/*": ["./src/renderer/src/*"],
-      "@bestfriend/core": ["../../packages/core/src/index.ts"],
+      "@bestfriend/core": ["../../packages/core/src/renderer-public.ts"],
       "@bestfriend/core/*": ["../../packages/core/src/*"]
     }
   },

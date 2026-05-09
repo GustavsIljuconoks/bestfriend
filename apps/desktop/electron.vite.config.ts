@@ -25,7 +25,7 @@ export default defineConfig({
     resolve: {
       alias: {
         '@renderer': resolve('src/renderer/src'),
-        '@bestfriend/core': coreAlias,
+        '@bestfriend/core': resolve(coreAlias, 'renderer-public.ts'),
       },
     },
     plugins: [react()],

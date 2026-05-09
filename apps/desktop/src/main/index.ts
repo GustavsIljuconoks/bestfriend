@@ -11,6 +11,8 @@ import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { initDb, closeDb } from './db/index.js'
 import { registerSettingsHandlers } from './ipc/settings.js'
+import { registerLibraryHandlers } from './ipc/library.js'
+import { initJobQueue } from './jobs/JobQueue.js'
 
 interface WindowBounds {
   x?: number
@@ -176,9 +178,11 @@ function createWindow(): BrowserWindow {
   return win
 }
 
-function registerIpcHandlers(): void {
+function registerIpcHandlers(win: BrowserWindow): void {
   ipcMain.handle('ping', () => 'pong')
   registerSettingsHandlers()
+  registerLibraryHandlers()
+  initJobQueue(() => win.webContents)
 }
 
 function sendTheme(win: BrowserWindow): void {
@@ -192,7 +196,7 @@ app.whenReady().then(() => {
   const win = createWindow()
 
   buildMenu(win)
-  registerIpcHandlers()
+  registerIpcHandlers(win)
 
   nativeTheme.on('updated', () => sendTheme(win))
 

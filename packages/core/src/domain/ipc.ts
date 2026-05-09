@@ -5,6 +5,7 @@ import type {
   CreatePineconeIndexResult,
   DocumentSummary,
   FeedItem,
+  IndexingEstimate,
   InboxItem,
   JobEvent,
   MaskedSettings,
@@ -24,6 +25,9 @@ export interface WindowApi {
   addFolderIndex(path: string): Promise<{ indexId: string }>
   scanFolder(indexId: string): Promise<{ jobId: string }>
   dropFiles(paths: string[]): Promise<{ jobId: string }>
+  estimateFiles(paths: string[]): Promise<IndexingEstimate>
+  /** Absolute paths for OS-backed files (drag/drop, file picker). Required on sandboxed renderers. */
+  getPathsForDroppedFiles(files: File[]): string[]
   listDocuments(): Promise<DocumentSummary[]>
   removeDocument(documentId: string): Promise<void>
   reindexDocument(documentId: string): Promise<{ jobId: string }>

@@ -567,29 +567,29 @@ The model produces proposals only via OpenAI tool calls, with strict JSON schema
 - [x] Initialize `usage_ledger` SQLite table (migration 002) with write helper
 
 ### Phase 2 — Indexing (txt/md) + Collections
-- [ ] Implement `documents`, `chunks`, `folder_indexes`, `collections`, `document_collections` SQLite tables (migration 003)
-- [ ] Implement text/markdown parser in `packages/core/ingest/` → `DocumentText` canonical representation
-- [ ] Implement chunking algorithm in `packages/core/rag/chunker.ts` (paragraph merge + overlap)
-- [ ] Implement token estimation utility in `packages/core/util/tokens.ts`
-- [ ] Implement embeddings batch helper in `packages/core/providers/openai/embeddings.ts`
-- [ ] Implement Pinecone upsert with metadata in `packages/core/providers/pinecone/upsert.ts`
-- [ ] Implement `dropFiles` IPC handler — accepts file paths, starts ingestion job, returns `jobId`
-- [ ] Implement job runner in `apps/desktop/src/main/jobs/` — queue, progress events, error handling
-- [ ] Emit `jobEvents` progress IPC stream (file count, chunks indexed, estimated cost so far)
-- [ ] Write `usage_ledger` entries for every embeddings API call
-- [ ] Implement SHA-256 hasher in `packages/core/util/hash.ts`
-- [ ] Implement `listDocuments` IPC handler returning `DocumentSummary[]`
-- [ ] Implement `removeDocument` IPC handler — soft-delete SQLite rows + delete Pinecone vectors
-- [ ] Implement `reindexDocument` IPC handler — recompute chunks, re-embed, upsert
-- [ ] Implement Collections CRUD: `createCollection`, `renameCollection`, `deleteCollection`, `assignDocumentToCollection`
-- [ ] Build Library renderer screen: file/folder dropzone (react-dropzone), document list with status badges
-- [ ] Build document list item with chunk count, last-indexed timestamp, per-row action menu
-- [ ] Build Collections sidebar panel: list, create/rename/delete, click-to-filter list
-- [ ] Build pre-action cost-estimate confirm dialog (shows "≈ N chunks, ≈ $X")
-- [ ] Subscribe to `jobEvents` stream in renderer; show per-document progress bar
-- [ ] Build `addFolderIndex` + `pickFolder` IPC handlers; wire "Add folder" button
-- [ ] Implement `scanFolder` IPC handler (enumerate files, filter by globs, start ingestion jobs)
-- [ ] Add per-day spend-cap check in job runner (pause queue and post feed item when exceeded)
+- [x] Implement `documents`, `chunks`, `folder_indexes`, `collections`, `document_collections` SQLite tables (migration 003)
+- [x] Implement text/markdown parser in `packages/core/ingest/` → `DocumentText` canonical representation
+- [x] Implement chunking algorithm in `packages/core/rag/chunker.ts` (paragraph merge + overlap)
+- [x] Implement token estimation utility in `packages/core/util/tokens.ts`
+- [x] Implement embeddings batch helper in `packages/core/providers/openai/embeddings.ts`
+- [x] Implement Pinecone upsert with metadata in `packages/core/providers/pinecone/upsert.ts`
+- [x] Implement `dropFiles` IPC handler — accepts file paths, starts ingestion job, returns `jobId`
+- [x] Implement job runner in `apps/desktop/src/main/jobs/` — queue, progress events, error handling
+- [x] Emit `jobEvents` progress IPC stream (file count, chunks indexed, estimated cost so far)
+- [x] Write `usage_ledger` entries for every embeddings API call
+- [x] Implement SHA-256 hasher in `packages/core/util/hash.ts`
+- [x] Implement `listDocuments` IPC handler returning `DocumentSummary[]`
+- [x] Implement `removeDocument` IPC handler — soft-delete SQLite rows + delete Pinecone vectors
+- [x] Implement `reindexDocument` IPC handler — recompute chunks, re-embed, upsert
+- [x] Implement Collections CRUD: `createCollection`, `renameCollection`, `deleteCollection`, `assignDocumentToCollection`
+- [x] Build Library renderer screen: file/folder dropzone (react-dropzone), document list with status badges
+- [x] Build document list item with chunk count, last-indexed timestamp, per-row action menu
+- [x] Build Collections sidebar panel: list, create/rename/delete, click-to-filter list
+- [x] Build pre-action cost-estimate confirm dialog (shows "≈ N chunks, ≈ $X")
+- [x] Subscribe to `jobEvents` stream in renderer; show per-document progress bar
+- [x] Build `addFolderIndex` + `pickFolder` IPC handlers; wire "Add folder" button
+- [x] Implement `scanFolder` IPC handler (enumerate files, filter by globs, start ingestion jobs)
+- [x] Add per-day spend-cap check in job runner (pause queue and post feed item when exceeded)
 
 ### Phase 3 — RAG Chat with Streaming + Scoping
 - [ ] Implement `conversations` and `messages` SQLite tables (migration 004)

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
 import type {
   WindowApi,
   JobEvent,
@@ -6,6 +6,9 @@ import type {
   SettingsPatch,
   TestConnectionsResult,
   CreatePineconeIndexResult,
+  DocumentSummary,
+  Collection,
+  IndexingEstimate,
 } from '@bestfriend/core'
 
 const notImplemented = (): Promise<never> =>
@@ -13,13 +16,45 @@ const notImplemented = (): Promise<never> =>
 
 const api: WindowApi = {
   // Library / indexing
-  pickFolder: () => notImplemented(),
-  addFolderIndex: () => notImplemented(),
-  scanFolder: () => notImplemented(),
-  dropFiles: () => notImplemented(),
-  listDocuments: () => notImplemented(),
-  removeDocument: () => notImplemented(),
-  reindexDocument: () => notImplemented(),
+  pickFolder: (): Promise<string | null> =>
+    ipcRenderer.invoke('library:pickFolder') as Promise<string | null>,
+
+  addFolderIndex: (path: string): Promise<{ indexId: string }> =>
+    ipcRenderer.invoke('library:addFolderIndex', path) as Promise<{ indexId: string }>,
+
+  scanFolder: (indexId: string): Promise<{ jobId: string }> =>
+    ipcRenderer.invoke('library:scanFolder', indexId) as Promise<{ jobId: string }>,
+
+  dropFiles: (paths: string[]): Promise<{ jobId: string }> =>
+    ipcRenderer.invoke('library:dropFiles', paths) as Promise<{ jobId: string }>,
+
+  estimateFiles: (paths: string[]): Promise<IndexingEstimate> =>
+    ipcRenderer.invoke('library:estimateFiles', paths) as Promise<IndexingEstimate>,
+
+  getPathsForDroppedFiles: (files: File[]): string[] => {
+    if (!Array.isArray(files)) return []
+    const out: string[] = []
+    for (const f of files) {
+      try {
+        const p = webUtils.getPathForFile(f)
+        if (p.length > 0) out.push(p)
+      } catch {
+        const legacy = (f as File & { path?: string }).path
+        if (typeof legacy === 'string' && legacy.length > 0) out.push(legacy)
+      }
+    }
+    return out
+  },
+
+  listDocuments: (): Promise<DocumentSummary[]> =>
+    ipcRenderer.invoke('library:listDocuments') as Promise<DocumentSummary[]>,
+
+  removeDocument: (documentId: string): Promise<void> =>
+    ipcRenderer.invoke('library:removeDocument', documentId) as Promise<void>,
+
+  reindexDocument: (documentId: string): Promise<{ jobId: string }> =>
+    ipcRenderer.invoke('library:reindexDocument', documentId) as Promise<{ jobId: string }>,
+
   onJobEvent: (callback: (event: JobEvent) => void) => {
     const handler = (_: IpcRendererEvent, event: JobEvent) => callback(event)
     ipcRenderer.on('job:event', handler)
@@ -27,48 +62,68 @@ const api: WindowApi = {
   },
 
   // Collections
-  listCollections: () => notImplemented(),
-  createCollection: () => notImplemented(),
-  renameCollection: () => notImplemented(),
-  deleteCollection: () => notImplemented(),
-  assignDocumentToCollection: () => notImplemented(),
-  removeDocumentFromCollection: () => notImplemented(),
+  listCollections: (): Promise<Collection[]> =>
+    ipcRenderer.invoke('library:listCollections') as Promise<Collection[]>,
 
-  // Chat
+  createCollection: (name: string, color?: string): Promise<Collection> =>
+    ipcRenderer.invoke('library:createCollection', name, color) as Promise<Collection>,
+
+  renameCollection: (id: string, name: string): Promise<void> =>
+    ipcRenderer.invoke('library:renameCollection', id, name) as Promise<void>,
+
+  deleteCollection: (id: string): Promise<void> =>
+    ipcRenderer.invoke('library:deleteCollection', id) as Promise<void>,
+
+  assignDocumentToCollection: (documentId: string, collectionId: string): Promise<void> =>
+    ipcRenderer.invoke(
+      'library:assignDocumentToCollection',
+      documentId,
+      collectionId,
+    ) as Promise<void>,
+
+  removeDocumentFromCollection: (documentId: string, collectionId: string): Promise<void> =>
+    ipcRenderer.invoke(
+      'library:removeDocumentFromCollection',
+      documentId,
+      collectionId,
+    ) as Promise<void>,
+
+  // Chat (Phase 3)
   listConversations: () => notImplemented(),
   createConversation: () => notImplemented(),
   listMessages: () => notImplemented(),
   sendMessage: () => notImplemented(),
 
-  // Proposals
+  // Proposals (Phase 4)
   listProposals: () => notImplemented(),
   acceptProposal: () => notImplemented(),
   rejectProposal: () => notImplemented(),
 
-  // Reminders
+  // Reminders (Phase 5)
   listReminders: () => notImplemented(),
   snoozeReminder: () => notImplemented(),
   dismissReminder: () => notImplemented(),
 
-  // Feed
+  // Feed (Phase 5)
   listFeedItems: () => notImplemented(),
   markFeedRead: () => notImplemented(),
 
-  // Inbox
+  // Inbox (Phase 8)
   quickCaptureText: () => notImplemented(),
   quickCaptureVoice: () => notImplemented(),
   listInbox: () => notImplemented(),
   triageInboxItem: () => notImplemented(),
   openCaptureWindow: () => notImplemented(),
 
-  // Memories
+  // Memories (Phase 4)
   listMemories: () => notImplemented(),
   updateMemory: () => notImplemented(),
   pinMemory: () => notImplemented(),
   deleteMemory: () => notImplemented(),
 
   // Settings
-  getSettings: (): Promise<MaskedSettings> => ipcRenderer.invoke('settings:get') as Promise<MaskedSettings>,
+  getSettings: (): Promise<MaskedSettings> =>
+    ipcRenderer.invoke('settings:get') as Promise<MaskedSettings>,
   setSettings: (patch: SettingsPatch): Promise<MaskedSettings> =>
     ipcRenderer.invoke('settings:set', patch) as Promise<MaskedSettings>,
   testConnections: (): Promise<TestConnectionsResult> =>

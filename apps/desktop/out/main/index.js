@@ -5,6 +5,7 @@ const require$$3$1 = require("fs");
 const Database = require("better-sqlite3");
 const require$$3 = require("node:stream");
 const require$$5 = require("stream");
+const crypto$1 = require("crypto");
 function runMigrations(db, migrations) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS _migrations (
@@ -77,6 +78,71 @@ const migration002 = {
     `);
   }
 };
+const migration003 = {
+  version: 3,
+  name: "003_documents_and_collections",
+  up(db) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL CHECK (source_type IN ('drop', 'file', 'folder', 'audio')),
+        source_uri TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        sha256 TEXT NOT NULL DEFAULT '',
+        bytes INTEGER NOT NULL DEFAULT 0,
+        indexed_at TEXT,
+        last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+        status TEXT NOT NULL DEFAULT 'indexing' CHECK (status IN ('indexed', 'indexing', 'error')),
+        error_message TEXT
+      )
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_documents_status ON documents (status)
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_documents_source_uri ON documents (source_uri)
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS chunks (
+        id TEXT PRIMARY KEY,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        chunk_index INTEGER NOT NULL,
+        chunk_text TEXT NOT NULL,
+        token_count_estimate INTEGER NOT NULL DEFAULT 0,
+        pinecone_vector_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks (document_id)
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS folder_indexes (
+        id TEXT PRIMARY KEY,
+        path TEXT NOT NULL UNIQUE,
+        include_globs_json TEXT NOT NULL DEFAULT '[]',
+        exclude_globs_json TEXT NOT NULL DEFAULT '[]',
+        last_scan_at TEXT
+      )
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        color TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS document_collections (
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+        PRIMARY KEY (document_id, collection_id)
+      )
+    `);
+  }
+};
 let _db = null;
 function getDb() {
   if (!_db) throw new Error("Database not initialized — call initDb() first");
@@ -89,7 +155,7 @@ function initDb() {
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("busy_timeout = 5000");
-  runMigrations(_db, [migration001, migration002]);
+  runMigrations(_db, [migration001, migration002, migration003]);
   return _db;
 }
 function closeDb() {
@@ -8938,6 +9004,15 @@ function normalizeOpenAIError(err) {
     return msg;
   }
   return String(err);
+}
+async function embedBatch(client, texts, model = "text-embedding-3-small") {
+  if (texts.length === 0) return { embeddings: [], total_tokens: 0 };
+  const response = await client.embeddings.create({ input: texts, model });
+  const ordered = [...response.data].sort((a, b) => a.index - b.index);
+  return {
+    embeddings: ordered.map((item) => item.embedding),
+    total_tokens: response.usage.total_tokens
+  };
 }
 var commonjsGlobal = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : {};
 var dist = {};
@@ -25872,6 +25947,163 @@ async function createIndexIfMissing(apiKey, indexName = DEFAULT_PINECONE_INDEX_N
     return { created: false, existed: false, dimension, error };
   }
 }
+const UPSERT_BATCH_SIZE = 100;
+const DELETE_BATCH_SIZE = 1e3;
+async function upsertVectors(index, namespace, vectors) {
+  if (vectors.length === 0) return;
+  for (let i = 0; i < vectors.length; i += UPSERT_BATCH_SIZE) {
+    const batch = vectors.slice(i, i + UPSERT_BATCH_SIZE);
+    await index.namespace(namespace).upsert({
+      records: batch.map((v) => ({
+        id: v.id,
+        values: v.embedding,
+        metadata: v.metadata
+      }))
+    });
+  }
+}
+async function deleteVectorsByIds(index, namespace, ids) {
+  if (ids.length === 0) return;
+  for (let i = 0; i < ids.length; i += DELETE_BATCH_SIZE) {
+    const batch = ids.slice(i, i + DELETE_BATCH_SIZE);
+    await index.namespace(namespace).deleteMany({ ids: batch });
+  }
+}
+function sha256File(filePath) {
+  const buffer = require$$3$1.readFileSync(filePath);
+  return crypto$1.createHash("sha256").update(buffer).digest("hex");
+}
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4);
+}
+function estimateTokensFromBytes(bytes) {
+  return Math.ceil(bytes / 4);
+}
+function estimateEmbeddingCostUsd(tokens, model = "text-embedding-3-small") {
+  const pricePerMillion = {
+    "text-embedding-3-small": 0.02,
+    "text-embedding-3-large": 0.13,
+    "text-embedding-ada-002": 0.1
+  };
+  const price = pricePerMillion[model] ?? 0.02;
+  return tokens / 1e6 * price;
+}
+const MIME_MAP = {
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".m4a": "audio/mp4",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav"
+};
+function mimeFromPath(filePath) {
+  const ext = require$$4.extname(filePath).toLowerCase();
+  return MIME_MAP[ext] ?? "application/octet-stream";
+}
+function isTextMime(mime) {
+  return mime === "text/plain" || mime === "text/markdown";
+}
+function isAudioMime(mime) {
+  return mime.startsWith("audio/");
+}
+function isPdfMime(mime) {
+  return mime === "application/pdf";
+}
+function isDocxMime(mime) {
+  return mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+}
+function isSupportedMime(mime) {
+  return isTextMime(mime) || isPdfMime(mime) || isDocxMime(mime) || isAudioMime(mime);
+}
+const SUPPORTED_EXTENSIONS = Object.keys(MIME_MAP);
+function parseTextFile(filePath, documentId) {
+  const content = require$$3$1.readFileSync(filePath, "utf8");
+  const mime = mimeFromPath(filePath);
+  return {
+    documentId,
+    displayName: require$$4.basename(filePath),
+    sourceUri: filePath,
+    mimeType: mime,
+    fullText: content
+  };
+}
+function chunkDocument(input) {
+  const { documentId, fullText, targetChunkTokens = 400, overlapTokens = 80 } = input;
+  const normalized = fullText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!normalized) return [];
+  const paragraphs = normalized.split(/\n\n+/).filter((p) => p.trim().length > 0);
+  const chunks = [];
+  let currentParagraphs = [];
+  let currentTokens = 0;
+  const flush = () => {
+    if (currentParagraphs.length === 0) return;
+    const text = currentParagraphs.join("\n\n");
+    chunks.push({
+      documentId,
+      chunkIndex: chunks.length,
+      chunkText: text,
+      tokenCountEstimate: estimateTokens(text)
+    });
+    currentParagraphs = buildOverlap(currentParagraphs, overlapTokens);
+    currentTokens = estimateTokens(currentParagraphs.join("\n\n"));
+  };
+  for (const para of paragraphs) {
+    const paraTokens = estimateTokens(para);
+    if (paraTokens > targetChunkTokens) {
+      if (currentParagraphs.length > 0) flush();
+      const subChunks = splitLargeParagraph(para, documentId, chunks.length, targetChunkTokens);
+      chunks.push(...subChunks);
+      continue;
+    }
+    if (currentTokens + paraTokens > targetChunkTokens && currentParagraphs.length > 0) {
+      flush();
+    }
+    currentParagraphs.push(para);
+    currentTokens += paraTokens;
+  }
+  flush();
+  return chunks;
+}
+function buildOverlap(paragraphs, overlapTokens) {
+  let accumulated = 0;
+  const overlap = [];
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const t = estimateTokens(paragraphs[i]);
+    if (accumulated + t > overlapTokens) break;
+    overlap.unshift(paragraphs[i]);
+    accumulated += t;
+  }
+  return overlap;
+}
+function splitLargeParagraph(para, documentId, startIndex, targetTokens) {
+  const sentences = para.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+  const chunks = [];
+  let currentSentences = [];
+  let currentTokens = 0;
+  const flush = () => {
+    if (currentSentences.length === 0) return;
+    const text = currentSentences.join(" ");
+    chunks.push({
+      documentId,
+      chunkIndex: startIndex + chunks.length,
+      chunkText: text,
+      tokenCountEstimate: estimateTokens(text)
+    });
+    currentSentences = [];
+    currentTokens = 0;
+  };
+  for (const sentence of sentences) {
+    const t = estimateTokens(sentence);
+    if (currentTokens + t > targetTokens && currentSentences.length > 0) {
+      flush();
+    }
+    currentSentences.push(sentence);
+    currentTokens += t;
+  }
+  flush();
+  return chunks;
+}
 function getSettingJson(db, key, fallback) {
   const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key);
   if (!row) return fallback;
@@ -26082,6 +26314,695 @@ function registerSettingsHandlers() {
     return createIndexIfMissing(pineconeKey, void 0, dimension);
   });
 }
+class DocumentRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  create(params) {
+    const id = crypto$1.randomUUID();
+    this.db.prepare(`
+        INSERT INTO documents (id, source_type, source_uri, display_name, mime_type, sha256, bytes, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'indexing')
+      `).run(
+      id,
+      params.sourceType,
+      params.sourceUri,
+      params.displayName,
+      params.mimeType,
+      params.sha256,
+      params.bytes
+    );
+    return this.getById(id);
+  }
+  getById(id) {
+    const row = this.db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
+    return row ? rowToDocument(row) : null;
+  }
+  getBySha256(sha256) {
+    const row = this.db.prepare("SELECT * FROM documents WHERE sha256 = ?").get(sha256);
+    return row ? rowToDocument(row) : null;
+  }
+  getBySourceUri(sourceUri) {
+    const row = this.db.prepare("SELECT * FROM documents WHERE source_uri = ?").get(sourceUri);
+    return row ? rowToDocument(row) : null;
+  }
+  listSummaries(collectionId) {
+    let rows;
+    if (collectionId) {
+      rows = this.db.prepare(`
+          SELECT d.id, d.display_name, d.mime_type, d.status, d.indexed_at, d.error_message,
+                 COUNT(c.id) as chunk_count
+          FROM documents d
+          JOIN document_collections dc ON dc.document_id = d.id
+          LEFT JOIN chunks c ON c.document_id = d.id
+          WHERE dc.collection_id = ?
+          GROUP BY d.id
+          ORDER BY d.last_seen_at DESC
+        `).all(collectionId);
+    } else {
+      rows = this.db.prepare(`
+          SELECT d.id, d.display_name, d.mime_type, d.status, d.indexed_at, d.error_message,
+                 COUNT(c.id) as chunk_count
+          FROM documents d
+          LEFT JOIN chunks c ON c.document_id = d.id
+          GROUP BY d.id
+          ORDER BY d.last_seen_at DESC
+        `).all();
+    }
+    return rows.map(rowToSummary);
+  }
+  markIndexed(id) {
+    this.db.prepare(`
+        UPDATE documents SET status = 'indexed', indexed_at = datetime('now'), error_message = NULL
+        WHERE id = ?
+      `).run(id);
+  }
+  markError(id, message) {
+    this.db.prepare(`
+        UPDATE documents SET status = 'error', error_message = ?
+        WHERE id = ?
+      `).run(message, id);
+  }
+  markIndexing(id) {
+    this.db.prepare(`UPDATE documents SET status = 'indexing' WHERE id = ?`).run(id);
+  }
+  updateSha256(id, sha256, bytes) {
+    this.db.prepare(`UPDATE documents SET sha256 = ?, bytes = ?, last_seen_at = datetime('now') WHERE id = ?`).run(sha256, bytes, id);
+  }
+  setStatus(id, status) {
+    this.db.prepare(`UPDATE documents SET status = ? WHERE id = ?`).run(status, id);
+  }
+  delete(id) {
+    this.db.prepare("DELETE FROM documents WHERE id = ?").run(id);
+  }
+  listAll() {
+    const rows = this.db.prepare("SELECT * FROM documents ORDER BY last_seen_at DESC").all();
+    return rows.map(rowToDocument);
+  }
+}
+function rowToDocument(row) {
+  return {
+    id: row.id,
+    source_type: row.source_type,
+    source_uri: row.source_uri,
+    display_name: row.display_name,
+    mime_type: row.mime_type,
+    sha256: row.sha256,
+    bytes: row.bytes,
+    indexed_at: row.indexed_at,
+    last_seen_at: row.last_seen_at,
+    status: row.status,
+    error_message: row.error_message
+  };
+}
+function rowToSummary(row) {
+  return {
+    id: row.id,
+    display_name: row.display_name,
+    mime_type: row.mime_type,
+    status: row.status,
+    chunk_count: row.chunk_count,
+    indexed_at: row.indexed_at,
+    error_message: row.error_message
+  };
+}
+class ChunkRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  insertBatch(chunks) {
+    const stmt = this.db.prepare(`
+      INSERT INTO chunks (id, document_id, chunk_index, chunk_text, token_count_estimate)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    const insertMany = this.db.transaction(
+      (items) => {
+        return items.map((item) => {
+          const id = crypto$1.randomUUID();
+          stmt.run(id, item.documentId, item.chunkIndex, item.chunkText, item.tokenCountEstimate);
+          return id;
+        });
+      }
+    );
+    const ids = insertMany(chunks);
+    return ids.map((id, i) => ({
+      id,
+      document_id: chunks[i].documentId,
+      chunk_index: chunks[i].chunkIndex,
+      chunk_text: chunks[i].chunkText,
+      token_count_estimate: chunks[i].tokenCountEstimate,
+      pinecone_vector_id: null,
+      created_at: (/* @__PURE__ */ new Date()).toISOString()
+    }));
+  }
+  setPineconeVectorId(chunkId, vectorId) {
+    this.db.prepare("UPDATE chunks SET pinecone_vector_id = ? WHERE id = ?").run(vectorId, chunkId);
+  }
+  listByDocument(documentId) {
+    const rows = this.db.prepare("SELECT * FROM chunks WHERE document_id = ? ORDER BY chunk_index").all(documentId);
+    return rows.map(rowToChunk);
+  }
+  getPineconeVectorIds(documentId) {
+    const rows = this.db.prepare(
+      "SELECT pinecone_vector_id FROM chunks WHERE document_id = ? AND pinecone_vector_id IS NOT NULL"
+    ).all(documentId);
+    return rows.map((r) => r.pinecone_vector_id);
+  }
+  deleteByDocument(documentId) {
+    this.db.prepare("DELETE FROM chunks WHERE document_id = ?").run(documentId);
+  }
+  countByDocument(documentId) {
+    const row = this.db.prepare("SELECT COUNT(*) as count FROM chunks WHERE document_id = ?").get(documentId);
+    return row.count;
+  }
+}
+function rowToChunk(row) {
+  return {
+    id: row.id,
+    document_id: row.document_id,
+    chunk_index: row.chunk_index,
+    chunk_text: row.chunk_text,
+    token_count_estimate: row.token_count_estimate,
+    pinecone_vector_id: row.pinecone_vector_id,
+    created_at: row.created_at
+  };
+}
+class CollectionRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  create(name2, color) {
+    const id = crypto$1.randomUUID();
+    this.db.prepare("INSERT INTO collections (id, name, color) VALUES (?, ?, ?)").run(id, name2, color ?? null);
+    return this.getById(id);
+  }
+  getById(id) {
+    const row = this.db.prepare("SELECT * FROM collections WHERE id = ?").get(id);
+    return row ? rowToCollection(row) : null;
+  }
+  listAll() {
+    const rows = this.db.prepare("SELECT * FROM collections ORDER BY created_at ASC").all();
+    return rows.map(rowToCollection);
+  }
+  rename(id, name2) {
+    this.db.prepare("UPDATE collections SET name = ? WHERE id = ?").run(name2, id);
+  }
+  delete(id) {
+    this.db.prepare("DELETE FROM collections WHERE id = ?").run(id);
+  }
+  assignDocument(documentId, collectionId) {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO document_collections (document_id, collection_id) VALUES (?, ?)"
+    ).run(documentId, collectionId);
+  }
+  removeDocument(documentId, collectionId) {
+    this.db.prepare("DELETE FROM document_collections WHERE document_id = ? AND collection_id = ?").run(documentId, collectionId);
+  }
+  getCollectionIdsForDocument(documentId) {
+    const rows = this.db.prepare(
+      "SELECT collection_id FROM document_collections WHERE document_id = ?"
+    ).all(documentId);
+    return rows.map((r) => r.collection_id);
+  }
+}
+function rowToCollection(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    color: row.color,
+    created_at: row.created_at
+  };
+}
+class FolderIndexRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  create(path2, includeGlobs = [], excludeGlobs = []) {
+    const id = crypto$1.randomUUID();
+    this.db.prepare(
+      "INSERT OR IGNORE INTO folder_indexes (id, path, include_globs_json, exclude_globs_json) VALUES (?, ?, ?, ?)"
+    ).run(id, path2, JSON.stringify(includeGlobs), JSON.stringify(excludeGlobs));
+    const existing = this.getByPath(path2);
+    if (existing) return existing;
+    return {
+      id,
+      path: path2,
+      include_globs: includeGlobs,
+      exclude_globs: excludeGlobs,
+      last_scan_at: null
+    };
+  }
+  getById(id) {
+    const row = this.db.prepare("SELECT * FROM folder_indexes WHERE id = ?").get(id);
+    return row ? rowToFolderIndex(row) : null;
+  }
+  getByPath(path2) {
+    const row = this.db.prepare("SELECT * FROM folder_indexes WHERE path = ?").get(path2);
+    return row ? rowToFolderIndex(row) : null;
+  }
+  listAll() {
+    const rows = this.db.prepare("SELECT * FROM folder_indexes").all();
+    return rows.map(rowToFolderIndex);
+  }
+  markScanned(id) {
+    this.db.prepare(`UPDATE folder_indexes SET last_scan_at = datetime('now') WHERE id = ?`).run(id);
+  }
+}
+function rowToFolderIndex(row) {
+  return {
+    id: row.id,
+    path: row.path,
+    include_globs: JSON.parse(row.include_globs_json),
+    exclude_globs: JSON.parse(row.exclude_globs_json),
+    last_scan_at: row.last_scan_at
+  };
+}
+class JobQueue {
+  constructor(getWebContents) {
+    this.getWebContents = getWebContents;
+  }
+  queue = [];
+  running = false;
+  enqueue(jobId, fn) {
+    this.queue.push({ jobId, fn });
+    if (!this.running) {
+      void this.drain();
+    }
+  }
+  emit(event) {
+    try {
+      this.getWebContents()?.send("job:event", event);
+    } catch {
+    }
+  }
+  async drain() {
+    this.running = true;
+    while (this.queue.length > 0) {
+      const entry = this.queue.shift();
+      try {
+        await entry.fn((progress) => {
+          this.emit({ job_id: entry.jobId, type: "progress", progress });
+        });
+        this.emit({ job_id: entry.jobId, type: "complete" });
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        this.emit({ job_id: entry.jobId, type: "error", error });
+      }
+    }
+    this.running = false;
+  }
+}
+let _queue = null;
+function initJobQueue(getWebContents) {
+  _queue = new JobQueue(getWebContents);
+}
+function getJobQueue() {
+  if (!_queue) throw new Error("Job queue not initialized — call initJobQueue() first");
+  return _queue;
+}
+class UsageLedgerRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  record(entry) {
+    this.db.prepare(`
+        INSERT INTO usage_ledger (id, provider, kind, tokens_in, tokens_out, units, est_cost_usd, occurred_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+      crypto$1.randomUUID(),
+      entry.provider,
+      entry.kind,
+      entry.tokens_in ?? null,
+      entry.tokens_out ?? null,
+      entry.units ?? null,
+      entry.est_cost_usd
+    );
+  }
+  /** Returns total spend in USD for a given day. day format: 'YYYY-MM-DD'. */
+  dailyTotalUsd(day) {
+    const row = this.db.prepare(`
+        SELECT COALESCE(SUM(est_cost_usd), 0) as total
+        FROM usage_ledger
+        WHERE date(occurred_at) = ?
+      `).get(day);
+    return row.total;
+  }
+  todayTotalUsd() {
+    return this.dailyTotalUsd((/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
+  }
+  listRecent(limit2 = 100) {
+    return this.db.prepare(`
+        SELECT * FROM usage_ledger ORDER BY occurred_at DESC LIMIT ?
+      `).all(limit2);
+  }
+}
+const EMBED_BATCH_SIZE = 96;
+function estimateFilePaths(db, paths) {
+  const settingsRepo = new SettingsRepo(db);
+  const { models: models2, spend } = settingsRepo.loadNonSecretSettings();
+  let totalTokens = 0;
+  let fileCount = 0;
+  for (const p of paths) {
+    try {
+      const mime = mimeFromPath(p);
+      if (!isSupportedMime(mime)) continue;
+      if (!isTextMime(mime)) continue;
+      const stat = require$$3$1.statSync(p);
+      totalTokens += estimateTokensFromBytes(stat.size);
+      fileCount++;
+    } catch {
+    }
+  }
+  const catalogEntry = EMBEDDING_MODEL_CATALOG.find((e) => e.id === models2.embeddings_model);
+  const chunkSize = 400;
+  const estimatedChunks = Math.ceil(totalTokens / chunkSize);
+  const estimatedCost = estimateEmbeddingCostUsd(totalTokens, catalogEntry?.id);
+  return {
+    file_count: fileCount,
+    estimated_chunks: estimatedChunks,
+    estimated_cost_usd: estimatedCost,
+    exceeds_threshold: estimatedCost > spend.confirm_threshold_usd
+  };
+}
+async function ingestFiles(db, paths, onProgress) {
+  const docRepo = new DocumentRepo(db);
+  const chunkRepo = new ChunkRepo(db);
+  const collectionRepo = new CollectionRepo(db);
+  const ledgerRepo = new UsageLedgerRepo(db);
+  const settingsRepo = new SettingsRepo(db);
+  const openaiKey = retrieveKey("openai");
+  const pineconeKey = retrieveKey("pinecone");
+  if (!openaiKey) throw new Error("OpenAI API key is not configured");
+  if (!pineconeKey) throw new Error("Pinecone API key is not configured");
+  const openai = createOpenAIClient(openaiKey);
+  const pinecone2 = createPineconeClient(pineconeKey);
+  const pineconeIndex = pinecone2.index(DEFAULT_PINECONE_INDEX_NAME);
+  const supportedPaths = paths.filter((p) => {
+    try {
+      return isTextMime(mimeFromPath(p));
+    } catch {
+      return false;
+    }
+  });
+  const total = supportedPaths.length;
+  let processed = 0;
+  let estimatedCostSoFar = 0;
+  onProgress({ current: 0, total, phase: "starting", estimated_cost_usd: 0 });
+  for (const filePath of supportedPaths) {
+    const { models: models2, spend, retrieval } = settingsRepo.loadNonSecretSettings();
+    const catalogEntry = EMBEDDING_MODEL_CATALOG.find((e) => e.id === models2.embeddings_model);
+    const embeddingModel = catalogEntry?.id ?? "text-embedding-3-small";
+    const todaySpend = ledgerRepo.todayTotalUsd();
+    if (spend.daily_cap_usd > 0 && todaySpend >= spend.daily_cap_usd) {
+      throw new Error(
+        `Daily spend cap of $${spend.daily_cap_usd.toFixed(2)} reached ($${todaySpend.toFixed(2)} spent today). ${total - processed} file(s) skipped.`
+      );
+    }
+    onProgress({
+      current: processed,
+      total,
+      phase: `parsing ${require$$4.basename(filePath)}`,
+      estimated_cost_usd: estimatedCostSoFar
+    });
+    try {
+      const mime = mimeFromPath(filePath);
+      const stat = require$$3$1.statSync(filePath);
+      const sha256 = sha256File(filePath);
+      const existing = docRepo.getBySourceUri(filePath);
+      if (existing?.sha256 === sha256 && existing.status === "indexed") {
+        processed++;
+        continue;
+      }
+      let doc = existing;
+      if (!doc) {
+        doc = docRepo.create({
+          sourceType: "drop",
+          sourceUri: filePath,
+          displayName: require$$4.basename(filePath),
+          mimeType: mime,
+          sha256,
+          bytes: stat.size
+        });
+      } else {
+        docRepo.markIndexing(doc.id);
+        docRepo.updateSha256(doc.id, sha256, stat.size);
+        const oldVectorIds = chunkRepo.getPineconeVectorIds(doc.id);
+        if (oldVectorIds.length > 0) {
+          await deleteVectorsByIds(pineconeIndex, "docs", oldVectorIds);
+        }
+        chunkRepo.deleteByDocument(doc.id);
+      }
+      const documentText = parseTextFile(filePath, doc.id);
+      const rawChunks = chunkDocument({
+        documentId: doc.id,
+        fullText: documentText.fullText,
+        targetChunkTokens: retrieval.chunk_size_tokens,
+        overlapTokens: retrieval.chunk_overlap_tokens
+      });
+      if (rawChunks.length === 0) {
+        docRepo.markIndexed(doc.id);
+        processed++;
+        continue;
+      }
+      const persistedChunks = chunkRepo.insertBatch(
+        rawChunks.map((c) => ({
+          documentId: c.documentId,
+          chunkIndex: c.chunkIndex,
+          chunkText: c.chunkText,
+          tokenCountEstimate: c.tokenCountEstimate
+        }))
+      );
+      const collectionIds = collectionRepo.getCollectionIdsForDocument(doc.id);
+      for (let i = 0; i < persistedChunks.length; i += EMBED_BATCH_SIZE) {
+        onProgress({
+          current: processed,
+          total,
+          phase: `embedding ${require$$4.basename(filePath)} ${i + 1}–${Math.min(i + EMBED_BATCH_SIZE, persistedChunks.length)}/${persistedChunks.length}`,
+          estimated_cost_usd: estimatedCostSoFar
+        });
+        const batchChunks = persistedChunks.slice(i, i + EMBED_BATCH_SIZE);
+        const texts = batchChunks.map((c) => c.chunk_text);
+        const embedResult = await embedBatch(openai, texts, embeddingModel);
+        const batchCost = estimateEmbeddingCostUsd(embedResult.total_tokens, embeddingModel);
+        estimatedCostSoFar += batchCost;
+        ledgerRepo.record({
+          provider: "openai",
+          kind: "embed",
+          tokens_in: embedResult.total_tokens,
+          tokens_out: null,
+          units: null,
+          est_cost_usd: batchCost
+        });
+        const vectors = batchChunks.map((chunk, idx) => ({
+          id: `chunk::${chunk.id}`,
+          embedding: embedResult.embeddings[idx],
+          metadata: {
+            chunk_id: chunk.id,
+            document_id: doc.id,
+            chunk_index: chunk.chunk_index,
+            filename: require$$4.basename(filePath),
+            source_uri: filePath,
+            mime_type: mime,
+            sha256,
+            text: chunk.chunk_text,
+            collection_ids: collectionIds
+          }
+        }));
+        await upsertVectors(pineconeIndex, "docs", vectors);
+        for (const chunk of batchChunks) {
+          chunkRepo.setPineconeVectorId(chunk.id, `chunk::${chunk.id}`);
+        }
+      }
+      docRepo.markIndexed(doc.id);
+    } catch (err) {
+      const existing = docRepo.getBySourceUri(filePath);
+      if (existing) {
+        docRepo.markError(existing.id, err instanceof Error ? err.message : String(err));
+      }
+    }
+    processed++;
+    onProgress({
+      current: processed,
+      total,
+      phase: processed === total ? "done" : `processed ${processed}/${total}`,
+      estimated_cost_usd: estimatedCostSoFar
+    });
+  }
+}
+async function removeDocumentVectors(db, documentId) {
+  const chunkRepo = new ChunkRepo(db);
+  const pineconeKey = retrieveKey("pinecone");
+  if (!pineconeKey) return;
+  const vectorIds = chunkRepo.getPineconeVectorIds(documentId);
+  if (vectorIds.length === 0) return;
+  try {
+    const pinecone2 = createPineconeClient(pineconeKey);
+    const index = pinecone2.index(DEFAULT_PINECONE_INDEX_NAME);
+    await deleteVectorsByIds(index, "docs", vectorIds);
+  } catch (err) {
+    console.error("[ingest] Failed to delete Pinecone vectors:", err);
+  }
+}
+function enumerateFiles(dir, result = []) {
+  try {
+    const entries = require$$3$1.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) continue;
+      const fullPath = require$$4.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        enumerateFiles(fullPath, result);
+      } else if (entry.isFile()) {
+        const ext = require$$4.extname(entry.name).toLowerCase();
+        if (SUPPORTED_EXTENSIONS.includes(ext)) {
+          result.push(fullPath);
+        }
+      }
+    }
+  } catch {
+  }
+  return result;
+}
+function getSupportedFilesInFolder(folderPath) {
+  try {
+    require$$3$1.statSync(folderPath);
+    return enumerateFiles(folderPath);
+  } catch {
+    return [];
+  }
+}
+function validateString(value, name2) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name2} must be a non-empty string`);
+  }
+  return value.trim();
+}
+function validateStringArray(value, name2) {
+  if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) {
+    throw new Error(`${name2} must be an array of strings`);
+  }
+  return value;
+}
+function registerLibraryHandlers() {
+  electron.ipcMain.handle("library:pickFolder", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openDirectory"],
+      title: "Choose a folder to index"
+    });
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  electron.ipcMain.handle(
+    "library:addFolderIndex",
+    async (_event, rawPath) => {
+      const path2 = validateString(rawPath, "path");
+      const repo = new FolderIndexRepo(getDb());
+      const folderIndex = repo.create(path2);
+      return { indexId: folderIndex.id };
+    }
+  );
+  electron.ipcMain.handle(
+    "library:scanFolder",
+    async (_event, rawIndexId) => {
+      const indexId = validateString(rawIndexId, "indexId");
+      const db = getDb();
+      const repo = new FolderIndexRepo(db);
+      const folderIndex = repo.getById(indexId);
+      if (!folderIndex) throw new Error(`Folder index ${indexId} not found`);
+      const filePaths = getSupportedFilesInFolder(folderIndex.path);
+      const jobId = crypto$1.randomUUID();
+      getJobQueue().enqueue(
+        jobId,
+        (onProgress) => ingestFiles(db, filePaths, onProgress).then(() => {
+          repo.markScanned(indexId);
+        })
+      );
+      return { jobId };
+    }
+  );
+  electron.ipcMain.handle(
+    "library:dropFiles",
+    async (_event, rawPaths) => {
+      const paths = validateStringArray(rawPaths, "paths");
+      const db = getDb();
+      const jobId = crypto$1.randomUUID();
+      getJobQueue().enqueue(jobId, (onProgress) => ingestFiles(db, paths, onProgress));
+      return { jobId };
+    }
+  );
+  electron.ipcMain.handle(
+    "library:estimateFiles",
+    async (_event, rawPaths) => {
+      const paths = validateStringArray(rawPaths, "paths");
+      return estimateFilePaths(getDb(), paths);
+    }
+  );
+  electron.ipcMain.handle("library:listDocuments", async () => {
+    return new DocumentRepo(getDb()).listSummaries();
+  });
+  electron.ipcMain.handle(
+    "library:removeDocument",
+    async (_event, rawId) => {
+      const documentId = validateString(rawId, "documentId");
+      const db = getDb();
+      await removeDocumentVectors(db, documentId);
+      new ChunkRepo(db).deleteByDocument(documentId);
+      new DocumentRepo(db).delete(documentId);
+    }
+  );
+  electron.ipcMain.handle(
+    "library:reindexDocument",
+    async (_event, rawId) => {
+      const documentId = validateString(rawId, "documentId");
+      const db = getDb();
+      const doc = new DocumentRepo(db).getById(documentId);
+      if (!doc) throw new Error(`Document ${documentId} not found`);
+      const jobId = crypto$1.randomUUID();
+      getJobQueue().enqueue(
+        jobId,
+        (onProgress) => ingestFiles(db, [doc.source_uri], onProgress)
+      );
+      return { jobId };
+    }
+  );
+  electron.ipcMain.handle("library:listCollections", async () => {
+    return new CollectionRepo(getDb()).listAll();
+  });
+  electron.ipcMain.handle(
+    "library:createCollection",
+    async (_event, rawName, rawColor) => {
+      const name2 = validateString(rawName, "name");
+      const color = rawColor != null ? validateString(rawColor, "color") : void 0;
+      return new CollectionRepo(getDb()).create(name2, color);
+    }
+  );
+  electron.ipcMain.handle(
+    "library:renameCollection",
+    async (_event, rawId, rawName) => {
+      const id = validateString(rawId, "id");
+      const name2 = validateString(rawName, "name");
+      new CollectionRepo(getDb()).rename(id, name2);
+    }
+  );
+  electron.ipcMain.handle("library:deleteCollection", async (_event, rawId) => {
+    const id = validateString(rawId, "id");
+    new CollectionRepo(getDb()).delete(id);
+  });
+  electron.ipcMain.handle(
+    "library:assignDocumentToCollection",
+    async (_event, rawDocId, rawColId) => {
+      const documentId = validateString(rawDocId, "documentId");
+      const collectionId = validateString(rawColId, "collectionId");
+      new CollectionRepo(getDb()).assignDocument(documentId, collectionId);
+    }
+  );
+  electron.ipcMain.handle(
+    "library:removeDocumentFromCollection",
+    async (_event, rawDocId, rawColId) => {
+      const documentId = validateString(rawDocId, "documentId");
+      const collectionId = validateString(rawColId, "collectionId");
+      new CollectionRepo(getDb()).removeDocument(documentId, collectionId);
+    }
+  );
+}
 function stateFile() {
   return require$$4.join(electron.app.getPath("userData"), "window-state.json");
 }
@@ -26223,9 +27144,11 @@ function createWindow() {
   }
   return win;
 }
-function registerIpcHandlers() {
+function registerIpcHandlers(win) {
   electron.ipcMain.handle("ping", () => "pong");
   registerSettingsHandlers();
+  registerLibraryHandlers();
+  initJobQueue(() => win.webContents);
 }
 function sendTheme(win) {
   win.webContents.send("theme:update", electron.nativeTheme.shouldUseDarkColors ? "dark" : "light");
@@ -26235,7 +27158,7 @@ electron.app.whenReady().then(() => {
   initDb();
   const win = createWindow();
   buildMenu(win);
-  registerIpcHandlers();
+  registerIpcHandlers(win);
   electron.nativeTheme.on("updated", () => sendTheme(win));
   win.webContents.once("did-finish-load", () => sendTheme(win));
   electron.app.on("activate", () => {
