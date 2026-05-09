@@ -1,2 +1,31 @@
+# Dependencies
 node_modules
+.pnpm-store
+
+# Build outputs
+apps/desktop/out
+dist
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# macOS
 .DS_Store
+**/.DS_Store
+
+# Electron / app data
+safe-keys.enc.json
+window-state.json
+bestfriend.db
+bestfriend.db-shm
+bestfriend.db-wal
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea
+*.swp
+*.swo

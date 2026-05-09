@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { WindowApi, JobEvent } from '@bestfriend/core'
+import type {
+  WindowApi,
+  JobEvent,
+  MaskedSettings,
+  SettingsPatch,
+  TestConnectionsResult,
+  CreatePineconeIndexResult,
+} from '@bestfriend/core'
 
 const notImplemented = (): Promise<never> =>
   Promise.reject(new Error('Not implemented in this phase'))
@@ -61,9 +68,13 @@ const api: WindowApi = {
   deleteMemory: () => notImplemented(),
 
   // Settings
-  getSettings: () => notImplemented(),
-  setSettings: () => notImplemented(),
-  testConnections: () => notImplemented(),
+  getSettings: (): Promise<MaskedSettings> => ipcRenderer.invoke('settings:get') as Promise<MaskedSettings>,
+  setSettings: (patch: SettingsPatch): Promise<MaskedSettings> =>
+    ipcRenderer.invoke('settings:set', patch) as Promise<MaskedSettings>,
+  testConnections: (): Promise<TestConnectionsResult> =>
+    ipcRenderer.invoke('settings:testConnections') as Promise<TestConnectionsResult>,
+  createPineconeIndex: (): Promise<CreatePineconeIndexResult> =>
+    ipcRenderer.invoke('settings:createPineconeIndex') as Promise<CreatePineconeIndexResult>,
 
   // Dev
   ping: () => ipcRenderer.invoke('ping') as Promise<string>,

@@ -1,2 +1,4 @@
 export * from './types.js'
 export * from './ipc.js'
+export * from './models-catalog.js'
+export * from './settings-defaults.js'

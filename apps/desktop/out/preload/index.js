@@ -50,9 +50,10 @@ const api = {
   pinMemory: () => notImplemented(),
   deleteMemory: () => notImplemented(),
   // Settings
-  getSettings: () => notImplemented(),
-  setSettings: () => notImplemented(),
-  testConnections: () => notImplemented(),
+  getSettings: () => electron.ipcRenderer.invoke("settings:get"),
+  setSettings: (patch) => electron.ipcRenderer.invoke("settings:set", patch),
+  testConnections: () => electron.ipcRenderer.invoke("settings:testConnections"),
+  createPineconeIndex: () => electron.ipcRenderer.invoke("settings:createPineconeIndex"),
   // Dev
   ping: () => electron.ipcRenderer.invoke("ping")
 };

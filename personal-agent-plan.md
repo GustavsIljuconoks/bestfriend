@@ -551,20 +551,20 @@ The model produces proposals only via OpenAI tool calls, with strict JSON schema
 - [x] Verify `pnpm --filter @bestfriend/desktop dev` starts with HMR and no console errors
 
 ### Phase 1 — Settings + Secrets + Connectivity
-- [ ] Design and implement `Settings` SQLite table + `user_profile` single-row table (migration 001)
-- [ ] Implement `safeStorage` wrapper in main process for OpenAI and Pinecone keys
-- [ ] Implement `getSettings` / `setSettings` IPC handlers (validate all fields in main)
-- [ ] Build Settings renderer screen: Profile section (name, role, timezone, tone, current projects)
-- [ ] Build Settings renderer section: API Keys (OpenAI, Pinecone) — inputs write via IPC, never stored in renderer state
-- [ ] Build Settings renderer section: Models (embeddings model, chat model, transcription model)
-- [ ] Build Settings renderer section: Retrieval knobs (topK_docs, topK_chat, chunk size, overlap)
-- [ ] Build Settings renderer section: Spend (per-day cap USD, pre-action confirm threshold display)
-- [ ] Implement `testConnections` IPC handler — verify OpenAI API key and Pinecone API key independently
-- [ ] Implement Pinecone client wrapper in `packages/core/providers/pinecone/` (create index if missing)
-- [ ] Implement OpenAI client wrapper in `packages/core/providers/openai/` (stub-safe, key optional)
-- [ ] Build "Test connections" UI button with per-service status pills and actionable error messages
-- [ ] Build "Auto-create Pinecone index" button (with dimension derived from selected embeddings model)
-- [ ] Initialize `usage_ledger` SQLite table (migration 002) with write helper
+- [x] Design and implement `Settings` SQLite table + `user_profile` single-row table (migration 001)
+- [x] Implement `safeStorage` wrapper in main process for OpenAI and Pinecone keys
+- [x] Implement `getSettings` / `setSettings` IPC handlers (validate all fields in main)
+- [x] Build Settings renderer screen: Profile section (name, role, timezone, tone, current projects)
+- [x] Build Settings renderer section: API Keys (OpenAI, Pinecone) — inputs write via IPC, never stored in renderer state
+- [x] Build Settings renderer section: Models (embeddings model, chat model, transcription model)
+- [x] Build Settings renderer section: Retrieval knobs (topK_docs, topK_chat, chunk size, overlap)
+- [x] Build Settings renderer section: Spend (per-day cap USD, pre-action confirm threshold display)
+- [x] Implement `testConnections` IPC handler — verify OpenAI API key and Pinecone API key independently
+- [x] Implement Pinecone client wrapper in `packages/core/providers/pinecone/` (create index if missing)
+- [x] Implement OpenAI client wrapper in `packages/core/providers/openai/` (stub-safe, key optional)
+- [x] Build "Test connections" UI button with per-service status pills and actionable error messages
+- [x] Build "Auto-create Pinecone index" button (with dimension derived from selected embeddings model)
+- [x] Initialize `usage_ledger` SQLite table (migration 002) with write helper
 
 ### Phase 2 — Indexing (txt/md) + Collections
 - [ ] Implement `documents`, `chunks`, `folder_indexes`, `collections`, `document_collections` SQLite tables (migration 003)

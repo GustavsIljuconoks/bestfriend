@@ -8,7 +8,8 @@
     "build": "electron-vite build && electron-builder",
     "build:vite": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "preview": "electron-vite preview"
+    "preview": "electron-vite preview",
+    "postinstall": "electron-rebuild -f -w better-sqlite3"
   },
   "dependencies": {
     "@bestfriend/core": "workspace:*",
@@ -16,6 +17,7 @@
     "@fontsource/instrument-serif": "^5.0.0",
     "@phosphor-icons/react": "^2.1.7",
     "@tanstack/react-query": "^5.56.0",
+    "better-sqlite3": "^12.9.0",
     "motion": "^11.5.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
@@ -23,6 +25,8 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",

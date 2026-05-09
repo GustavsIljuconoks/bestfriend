@@ -2,16 +2,19 @@ import type {
   AssistantTurn,
   Collection,
   ConversationSummary,
+  CreatePineconeIndexResult,
   DocumentSummary,
   FeedItem,
   InboxItem,
   JobEvent,
+  MaskedSettings,
   Memory,
   Message,
   Proposal,
   Reminder,
   ReminderPayload,
-  Settings,
+  SettingsPatch,
+  TestConnectionsResult,
   TriageAction,
 } from './types.js'
 
@@ -68,9 +71,10 @@ export interface WindowApi {
   deleteMemory(id: string): Promise<void>
 
   // Settings
-  getSettings(): Promise<Settings>
-  setSettings(patch: Partial<Settings>): Promise<Settings>
-  testConnections(): Promise<{ openaiOk: boolean; pineconeOk: boolean; errors: string[] }>
+  getSettings(): Promise<MaskedSettings>
+  setSettings(patch: SettingsPatch): Promise<MaskedSettings>
+  testConnections(): Promise<TestConnectionsResult>
+  createPineconeIndex(): Promise<CreatePineconeIndexResult>
 
   // Dev / internal
   ping(): Promise<string>

@@ -220,6 +220,7 @@ export interface RemindersMirroringSettings {
   list_name: string
 }
 
+/** Main-process internal only — never sent to renderer */
 export interface Settings {
   profile: UserProfile
   openai_api_key: string
@@ -229,6 +230,48 @@ export interface Settings {
   spend: SpendSettings
   theme: 'system' | 'light' | 'dark'
   reminders_mirroring: RemindersMirroringSettings
+}
+
+/** Safe projection sent to renderer — raw keys are never included */
+export interface MaskedSettings {
+  profile: UserProfile
+  openai_api_key_set: boolean
+  pinecone_api_key_set: boolean
+  models: ModelSettings
+  retrieval: RetrievalSettings
+  spend: SpendSettings
+  theme: 'system' | 'light' | 'dark'
+  reminders_mirroring: RemindersMirroringSettings
+}
+
+/** Write-only patch from renderer — secrets are accepted but never echoed back */
+export interface SettingsPatch {
+  profile?: UserProfile
+  openai_api_key?: string
+  pinecone_api_key?: string
+  models?: ModelSettings
+  retrieval?: RetrievalSettings
+  spend?: SpendSettings
+  theme?: 'system' | 'light' | 'dark'
+  reminders_mirroring?: RemindersMirroringSettings
+}
+
+export interface ServiceStatus {
+  ok: boolean
+  error: string | null
+  latency_ms: number | null
+}
+
+export interface TestConnectionsResult {
+  openai: ServiceStatus
+  pinecone: ServiceStatus
+}
+
+export interface CreatePineconeIndexResult {
+  created: boolean
+  existed: boolean
+  dimension: number
+  error: string | null
 }
 
 export interface JobProgress {

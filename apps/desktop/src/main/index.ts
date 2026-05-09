@@ -9,6 +9,8 @@ import {
 } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { initDb, closeDb } from './db/index.js'
+import { registerSettingsHandlers } from './ipc/settings.js'
 
 interface WindowBounds {
   x?: number
@@ -176,13 +178,17 @@ function createWindow(): BrowserWindow {
 
 function registerIpcHandlers(): void {
   ipcMain.handle('ping', () => 'pong')
+  registerSettingsHandlers()
 }
 
 function sendTheme(win: BrowserWindow): void {
   win.webContents.send('theme:update', nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
 }
 
+app.on('quit', () => closeDb())
+
 app.whenReady().then(() => {
+  initDb()
   const win = createWindow()
 
   buildMenu(win)
