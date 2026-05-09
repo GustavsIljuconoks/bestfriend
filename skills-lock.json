@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "finding-duplicate-functions": {
+      "source": "obra/superpowers-lab",
+      "sourceType": "github",
+      "skillPath": "skills/finding-duplicate-functions/SKILL.md",
+      "computedHash": "edbb8200d972353832d985e09f7584001479588fd321a4813d8162c8b6cdd5d2"
+    },
+    "mcp-cli": {
+      "source": "obra/superpowers-lab",
+      "sourceType": "github",
+      "skillPath": "skills/mcp-cli/SKILL.md",
+      "computedHash": "c5b4fa7ae6a77a97cbc5e9b2b8cdf388153721f40e47f2cdcd5aa29bf522a7ff"
+    },
+    "next-best-practices": {
+      "source": "vercel-labs/next-skills",
+      "sourceType": "github",
+      "skillPath": "skills/next-best-practices/SKILL.md",
+      "computedHash": "f4678aef4ffc10a5ea64a91e57abe5a5081af813b06d58d565caf3e8ef56e26c"
+    },
+    "next-cache-components": {
+      "source": "vercel-labs/next-skills",
+      "sourceType": "github",
+      "skillPath": "skills/next-cache-components/SKILL.md",
+      "computedHash": "f835d8226c28abf012cc013928e2627c8a7a046de61127ef229be1711bd1f255"
+    },
+    "next-upgrade": {
+      "source": "vercel-labs/next-skills",
+      "sourceType": "github",
+      "skillPath": "skills/next-upgrade/SKILL.md",
+      "computedHash": "e3aeb1f9e8a68d24df0c1c2e3c8ab97ede09a7251a2c76988318d02254346979"
+    },
+    "slack-messaging": {
+      "source": "obra/superpowers-lab",
+      "sourceType": "github",
+      "skillPath": "skills/slack-messaging/SKILL.md",
+      "computedHash": "62d899bd4419d62e992d2e03582361831dc87e2c0d0c2525e7d6b112c5234c9d"
+    },
+    "using-tmux-for-interactive-commands": {
+      "source": "obra/superpowers-lab",
+      "sourceType": "github",
+      "skillPath": "skills/using-tmux-for-interactive-commands/SKILL.md",
+      "computedHash": "c056256933e832a5a48fffe68a481cce7fe5729e3645382a0656d592705d6a55"
+    },
+    "windows-vm": {
+      "source": "obra/superpowers-lab",
+      "sourceType": "github",
+      "skillPath": "skills/windows-vm/SKILL.md",
+      "computedHash": "2022737589bb8e59ba4b86309640964aed9c83f5ec78b23aadf5a7b95482c75a"
+    }
+  }
+}
