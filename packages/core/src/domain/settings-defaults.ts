@@ -18,6 +18,7 @@ export const DEFAULT_SETTINGS: Omit<Settings, 'openai_api_key' | 'pinecone_api_k
     top_k_chat: 5,
     chunk_size_tokens: 400,
     chunk_overlap_tokens: 80,
+    proposal_confidence_threshold: 0.6,
   },
   spend: {
     daily_cap_usd: 5.0,

@@ -13,6 +13,8 @@ import { initDb, closeDb } from './db/index.js'
 import { registerSettingsHandlers } from './ipc/settings.js'
 import { registerLibraryHandlers } from './ipc/library.js'
 import { registerChatHandlers } from './ipc/chat.js'
+import { registerProposalHandlers } from './ipc/proposals.js'
+import { registerMemoryHandlers } from './ipc/memories.js'
 import { initJobQueue } from './jobs/JobQueue.js'
 
 interface WindowBounds {
@@ -184,6 +186,8 @@ function registerIpcHandlers(win: BrowserWindow): void {
   registerSettingsHandlers()
   registerLibraryHandlers()
   registerChatHandlers(win)
+  registerProposalHandlers()
+  registerMemoryHandlers()
   initJobQueue(() => win.webContents)
 }
 

@@ -72,9 +72,10 @@ export class SettingsRepo {
   }
 
   loadNonSecretSettings(): Omit<MaskedSettings, 'profile' | 'openai_api_key_set' | 'pinecone_api_key_set'> {
+    const storedRetrieval = getSettingJson<RetrievalSettings>(this.db, 'retrieval', DEFAULT_SETTINGS.retrieval)
     return {
       models: getSettingJson<ModelSettings>(this.db, 'models', DEFAULT_SETTINGS.models),
-      retrieval: getSettingJson<RetrievalSettings>(this.db, 'retrieval', DEFAULT_SETTINGS.retrieval),
+      retrieval: { ...DEFAULT_SETTINGS.retrieval, ...storedRetrieval },
       spend: getSettingJson<SpendSettings>(this.db, 'spend', DEFAULT_SETTINGS.spend),
       theme: getSettingJson<'system' | 'light' | 'dark'>(this.db, 'theme', DEFAULT_SETTINGS.theme),
       reminders_mirroring: getSettingJson<RemindersMirroringSettings>(

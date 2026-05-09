@@ -610,19 +610,19 @@ The model produces proposals only via OpenAI tool calls, with strict JSON schema
 - [x] Handle `chat_history` namespace filter in retrieval when conversation is scoped
 
 ### Phase 4 — Proposals + Memories via Tool Calls
-- [ ] Define strict JSON schemas for `propose_reminder`, `propose_suggestion`, `remember_about_user` tools in `packages/core/rag/tools.ts`
-- [ ] Wire tool definitions into the `sendMessage` OpenAI call
-- [ ] Implement tool-call payload parser/validator in main process (reject malformed calls, log violations)
-- [ ] Implement `proposals` and `memories` SQLite tables (migration 005)
-- [ ] Write proposal rows from tool-call payloads (`proposed` status, confidence stored)
-- [ ] Write memory rows from `remember_about_user` calls; inject active memories into system prompt
-- [ ] Implement `listProposals`, `acceptProposal`, `rejectProposal` IPC handlers
-- [ ] Build ProposalCard component (confidence badge, title, details, Accept/Reject buttons)
-- [ ] Build Accept Reminder confirm dialog (editable title, date/time picker, recurrence selector)
-- [ ] Build "Memories captured" inline indicator in assistant message when memories were recorded
-- [ ] Build Settings > Memories section: list all memories with edit, pin, soft-delete
-- [ ] Inject soft-deleted memory IDs into system prompt ("do not re-record") on every chat call
-- [ ] Apply confidence threshold gate: only render proposals with `confidence >= threshold`
+- [x] Define strict JSON schemas for `propose_reminder`, `propose_suggestion`, `remember_about_user` tools in `packages/core/rag/tools.ts`
+- [x] Wire tool definitions into the `sendMessage` OpenAI call
+- [x] Implement tool-call payload parser/validator in main process (reject malformed calls, log violations)
+- [x] Implement `proposals` and `memories` SQLite tables (migration 005)
+- [x] Write proposal rows from tool-call payloads (`proposed` status, confidence stored)
+- [x] Write memory rows from `remember_about_user` calls; inject active memories into system prompt
+- [x] Implement `listProposals`, `acceptProposal`, `rejectProposal` IPC handlers
+- [x] Build ProposalCard component (confidence badge, title, details, Accept/Reject buttons)
+- [x] Build Accept Reminder confirm dialog (editable title, date/time picker, recurrence selector)
+- [x] Build "Memories captured" inline indicator in assistant message when memories were recorded
+- [x] Build Settings > Memories section: list all memories with edit, pin, soft-delete
+- [x] Inject soft-deleted memory IDs into system prompt ("do not re-record") on every chat call
+- [x] Apply confidence threshold gate: only render proposals with `confidence >= threshold`
 
 ### Phase 5 — Reminder Scheduler + Notifications
 - [ ] Implement `reminders` and `feed_items` SQLite tables (migration 006)

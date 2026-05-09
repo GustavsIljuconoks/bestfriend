@@ -53,11 +53,37 @@ function validatePatch(patch: unknown): SettingsPatch {
   }
   if ('retrieval' in p && p['retrieval'] !== undefined) {
     const r = p['retrieval'] as Record<string, unknown>
-    const fields = ['top_k_docs', 'top_k_chat', 'chunk_size_tokens', 'chunk_overlap_tokens'] as const
-    for (const field of fields) {
-      if (r[field] !== undefined && (typeof r[field] !== 'number' || (r[field] as number) < 1)) {
-        throw new Error(`retrieval.${field} must be a positive number`)
-      }
+    if (
+      r['top_k_docs'] !== undefined &&
+      (typeof r['top_k_docs'] !== 'number' || (r['top_k_docs'] as number) < 1)
+    ) {
+      throw new Error('retrieval.top_k_docs must be >= 1')
+    }
+    if (
+      r['top_k_chat'] !== undefined &&
+      (typeof r['top_k_chat'] !== 'number' || (r['top_k_chat'] as number) < 0)
+    ) {
+      throw new Error('retrieval.top_k_chat must be >= 0')
+    }
+    if (
+      r['chunk_size_tokens'] !== undefined &&
+      (typeof r['chunk_size_tokens'] !== 'number' || (r['chunk_size_tokens'] as number) < 1)
+    ) {
+      throw new Error('retrieval.chunk_size_tokens must be >= 1')
+    }
+    if (
+      r['chunk_overlap_tokens'] !== undefined &&
+      (typeof r['chunk_overlap_tokens'] !== 'number' || (r['chunk_overlap_tokens'] as number) < 0)
+    ) {
+      throw new Error('retrieval.chunk_overlap_tokens must be >= 0')
+    }
+    if (
+      r['proposal_confidence_threshold'] !== undefined &&
+      (typeof r['proposal_confidence_threshold'] !== 'number' ||
+        (r['proposal_confidence_threshold'] as number) < 0 ||
+        (r['proposal_confidence_threshold'] as number) > 1)
+    ) {
+      throw new Error('retrieval.proposal_confidence_threshold must be between 0 and 1')
     }
   }
   if ('spend' in p && p['spend'] !== undefined) {

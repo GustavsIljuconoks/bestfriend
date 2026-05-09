@@ -100,6 +100,7 @@ export interface Message {
   content: string
   created_at: string
   retrieval_trace: RetrievalTrace | null
+  memories_captured: number
 }
 
 export interface ReminderPayload {
@@ -214,6 +215,8 @@ export interface RetrievalSettings {
   top_k_chat: number
   chunk_size_tokens: number
   chunk_overlap_tokens: number
+  /** Only surface proposals with confidence >= this (0–1). */
+  proposal_confidence_threshold: number
 }
 
 export interface SpendSettings {

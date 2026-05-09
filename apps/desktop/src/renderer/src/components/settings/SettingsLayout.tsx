@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { motion } from 'motion/react'
 import type { MaskedSettings } from '@bestfriend/core'
 import { ProfileSection } from './ProfileSection'
+import { MemoriesSection } from './MemoriesSection'
 import { ApiKeysSection } from './ApiKeysSection'
 import { ModelsSection } from './ModelsSection'
 import { RetrievalSection } from './RetrievalSection'
@@ -10,6 +11,7 @@ import { ConnectivitySection } from './ConnectivitySection'
 
 const SECTIONS = [
   { id: 'profile', label: 'Profile' },
+  { id: 'memories', label: 'Memories' },
   { id: 'api-keys', label: 'API Keys' },
   { id: 'models', label: 'Models' },
   { id: 'retrieval', label: 'Retrieval' },
@@ -92,6 +94,9 @@ export function SettingsLayout({ settings }: SettingsLayoutProps) {
       <div ref={contentRef} className="settings-content">
         <div id="profile" className="settings-section-anchor">
           <ProfileSection settings={settings} />
+        </div>
+        <div id="memories" className="settings-section-anchor">
+          <MemoriesSection />
         </div>
         <div id="api-keys" className="settings-section-anchor">
           <ApiKeysSection settings={settings} />

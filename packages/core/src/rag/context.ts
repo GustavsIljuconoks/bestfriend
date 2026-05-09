@@ -75,14 +75,43 @@ export function mergeDedupeAndCapSources(
   }
 }
 
-export function buildRagSystemPreamble(profileLines: string[], sourcesBlock: string): string {
+export function buildRagSystemPreamble(
+  profileLines: string[],
+  sourcesBlock: string,
+  memorySections: string[],
+): string {
   const parts = [
     'You are Bestfriend, a helpful personal assistant with access to the user library and past chats.',
     'When Sources are relevant, use them and cite with [doc:filename#chunkIndex] or [chat:title@YYYY-MM-DD].',
+    'Use the provided tools when appropriate: propose_reminder / propose_suggestion for actionable items, remember_about_user for stable personalization facts.',
+    'Never claim a reminder was scheduled until the user accepts it in the app.',
     ...profileLines,
+    ...memorySections,
     sourcesBlock,
   ].filter((p) => p.length > 0)
   return parts.join('\n\n')
+}
+
+export function buildMemorySections(
+  activeMemories: string[],
+  suppressedMemoryIds: string[],
+): string[] {
+  const lines: string[] = []
+  if (activeMemories.length > 0) {
+    lines.push(
+      ['## Active memories', ...activeMemories.map((m) => `- ${m}`)].join('\n'),
+    )
+  }
+  if (suppressedMemoryIds.length > 0) {
+    lines.push(
+      [
+        '## Do not re-record',
+        'The user removed these memory IDs — never call remember_about_user to restate the same facts:',
+        suppressedMemoryIds.map((id) => `- ${id}`).join('\n'),
+      ].join('\n'),
+    )
+  }
+  return lines
 }
 
 export function toOpenAiHistory(messages: { role: 'user' | 'assistant'; content: string }[]): ChatCompletionMessageParam[] {

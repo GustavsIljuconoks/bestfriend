@@ -16,6 +16,7 @@ interface NumberFieldProps {
   value: number
   min?: number
   max?: number
+  step?: number
   disabled: boolean
   onChange: (value: number) => void
   onBlur: () => void
@@ -28,6 +29,7 @@ function NumberField({
   value,
   min,
   max,
+  step,
   disabled,
   onChange,
   onBlur,
@@ -44,6 +46,7 @@ function NumberField({
         value={value}
         min={min}
         max={max}
+        step={step}
         disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
         onBlur={onBlur}
@@ -167,6 +170,21 @@ export function RetrievalSection({ settings }: RetrievalSectionProps) {
             max={512}
             disabled={isPending}
             onChange={(v) => handleChange('chunk_overlap_tokens', v)}
+            onBlur={handleBlur}
+          />
+        </div>
+
+        <div className="settings-number-row">
+          <NumberField
+            id="proposal-threshold"
+            label="Proposal confidence gate"
+            helper="Show reminder & suggestion cards only when model confidence is at least this value (0–1)."
+            value={form.proposal_confidence_threshold}
+            min={0}
+            max={1}
+            step={0.05}
+            disabled={isPending}
+            onChange={(v) => handleChange('proposal_confidence_threshold', v)}
             onBlur={handleBlur}
           />
         </div>

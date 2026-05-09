@@ -10,6 +10,7 @@ interface MessageRow {
   created_at: string
   retrieval_trace_json: string | null
   pinecone_vector_id: string | null
+  memories_captured: number
 }
 
 export class MessageRepo {
@@ -20,17 +21,27 @@ export class MessageRepo {
     role: MessageRole
     content: string
     retrievalTrace: RetrievalTrace | null
+    memoriesCaptured?: number
   }): Message {
     const id = randomUUID()
     const createdAt = new Date().toISOString()
+    const memCap = params.memoriesCaptured ?? 0
     const traceJson =
       params.retrievalTrace != null ? JSON.stringify(params.retrievalTrace) : null
     this.db
       .prepare(`
-        INSERT INTO messages (id, conversation_id, role, content, retrieval_trace_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO messages (id, conversation_id, role, content, retrieval_trace_json, created_at, memories_captured)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(id, params.conversationId, params.role, params.content, traceJson, createdAt)
+      .run(
+        id,
+        params.conversationId,
+        params.role,
+        params.content,
+        traceJson,
+        createdAt,
+        memCap,
+      )
     return {
       id,
       conversation_id: params.conversationId,
@@ -38,6 +49,7 @@ export class MessageRepo {
       content: params.content,
       created_at: createdAt,
       retrieval_trace: params.retrievalTrace,
+      memories_captured: memCap,
     }
   }
 
@@ -97,5 +109,6 @@ function rowToMessage(row: MessageRow): Message {
     content: row.content,
     created_at: row.created_at,
     retrieval_trace,
+    memories_captured: row.memories_captured ?? 0,
   }
 }

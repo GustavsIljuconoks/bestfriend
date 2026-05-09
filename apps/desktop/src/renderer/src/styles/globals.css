@@ -1854,3 +1854,147 @@ body {
   word-break: break-word;
   user-select: text;
 }
+
+.chat-turn-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(720px, 92%);
+}
+
+.chat-turn-stack-user {
+  align-items: flex-end;
+}
+
+.chat-memory-hint {
+  font-size: var(--text-12);
+  color: var(--text-tertiary);
+  margin: 0;
+  padding: 0 4px;
+  font-family: var(--font-ui);
+}
+
+.proposal-card {
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-list);
+  padding: 12px 14px;
+}
+
+.proposal-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-family: var(--font-ui);
+  font-size: var(--text-12);
+  color: var(--text-secondary);
+}
+
+.proposal-card-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.proposal-card-type {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.proposal-card-confidence {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-11);
+  color: var(--text-tertiary);
+}
+
+.proposal-card-title {
+  font-family: var(--font-ui);
+  font-size: var(--text-14);
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--text-primary);
+}
+
+.proposal-card-detail {
+  font-size: var(--text-13);
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.proposal-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.proposal-card-btn {
+  min-width: 88px;
+}
+
+.chat-reminder-dialog {
+  max-width: 440px;
+  width: 92vw;
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
+.chat-reminder-dialog-title {
+  font-size: var(--text-17);
+  margin: 0 0 16px;
+}
+
+.chat-reminder-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.chat-reminder-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.memory-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  background: var(--bg-list);
+}
+
+.memory-row-content {
+  font-size: var(--text-14);
+  line-height: 1.5;
+  margin: 0 0 10px;
+  color: var(--text-primary);
+}
+
+.memory-row-edit {
+  margin-bottom: 10px;
+  width: 100%;
+}
+
+.memory-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.memory-pin-on {
+  color: var(--accent);
+}

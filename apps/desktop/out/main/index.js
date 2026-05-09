@@ -173,6 +173,63 @@ const migration004 = {
     `);
   }
 };
+const migration005 = {
+  version: 5,
+  name: "005_proposals_memories_reminders",
+  up(db) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS proposals (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+        type TEXT NOT NULL CHECK (type IN ('reminder', 'suggestion')),
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('proposed', 'accepted', 'rejected')),
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        decided_at TEXT
+      )
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_proposals_message
+      ON proposals (message_id)
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_proposals_conversation_status
+      ON proposals (status)
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        deleted_at TEXT
+      )
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memories_deleted
+      ON memories (deleted_at)
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS reminders (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        notes TEXT,
+        due_at TEXT NOT NULL,
+        timezone TEXT NOT NULL,
+        recurrence TEXT NOT NULL CHECK (recurrence IN ('one_off', 'daily', 'weekly', 'monthly')),
+        status TEXT NOT NULL CHECK (status IN ('scheduled', 'fired', 'cancelled')),
+        snoozed_until TEXT,
+        eventkit_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        fired_at TEXT
+      )
+    `);
+    db.exec(`
+      ALTER TABLE messages ADD COLUMN memories_captured INTEGER NOT NULL DEFAULT 0
+    `);
+  }
+};
 let _db = null;
 function getDb() {
   if (!_db) throw new Error("Database not initialized — call initDb() first");
@@ -185,7 +242,7 @@ function initDb() {
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("busy_timeout = 5000");
-  runMigrations(_db, [migration001, migration002, migration003, migration004]);
+  runMigrations(_db, [migration001, migration002, migration003, migration004, migration005]);
   return _db;
 }
 function closeDb() {
@@ -217,7 +274,8 @@ const DEFAULT_SETTINGS = {
     top_k_docs: 10,
     top_k_chat: 5,
     chunk_size_tokens: 400,
-    chunk_overlap_tokens: 80
+    chunk_overlap_tokens: 80,
+    proposal_confidence_threshold: 0.6
   },
   spend: {
     daily_cap_usd: 5,
@@ -9045,31 +9103,74 @@ async function embedBatch(client, texts, model = "text-embedding-3-small") {
     total_tokens: response.usage.total_tokens
   };
 }
-async function streamChatCompletion(client, params, onDelta) {
-  const stream = client.chat.completions.stream({
-    model: params.model,
-    messages: params.messages,
-    stream: true,
-    stream_options: { include_usage: true }
-  });
+const MAX_TOOL_ROUNDS = 6;
+async function streamChatWithToolLoop(client, params, onDelta, onRoundUsage) {
+  const messages = [...params.messages];
   let fullText = "";
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) {
-      fullText += delta;
-      onDelta(delta);
+  const toolCalls = [];
+  let combinedUsage = null;
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const stream = client.chat.completions.stream({
+      model: params.model,
+      messages,
+      tools: params.tools,
+      tool_choice: "auto",
+      parallel_tool_calls: true,
+      stream: true,
+      stream_options: { include_usage: true }
+    });
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) {
+        fullText += delta;
+        onDelta(delta);
+      }
     }
+    const final = await stream.finalChatCompletion();
+    const u = final.usage;
+    if (u) {
+      const chunk = {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens
+      };
+      onRoundUsage?.(chunk);
+      if (combinedUsage === null) {
+        combinedUsage = { ...chunk };
+      } else {
+        combinedUsage = {
+          prompt_tokens: combinedUsage.prompt_tokens + chunk.prompt_tokens,
+          completion_tokens: combinedUsage.completion_tokens + chunk.completion_tokens,
+          total_tokens: combinedUsage.total_tokens + chunk.total_tokens
+        };
+      }
+    }
+    const choice = final.choices[0];
+    const msg = choice?.message;
+    const finish = choice?.finish_reason;
+    if (finish === "tool_calls" && msg?.tool_calls?.length) {
+      messages.push({
+        role: "assistant",
+        content: msg.content ?? null,
+        tool_calls: msg.tool_calls
+      });
+      for (const tc of msg.tool_calls) {
+        if (tc.type !== "function") continue;
+        toolCalls.push({
+          name: tc.function.name,
+          arguments: tc.function.arguments
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          content: '{"ok":true}'
+        });
+      }
+      continue;
+    }
+    return { fullText, usage: combinedUsage, toolCalls };
   }
-  const final = await stream.finalChatCompletion();
-  const u = final.usage;
-  return {
-    fullText,
-    usage: u ? {
-      prompt_tokens: u.prompt_tokens,
-      completion_tokens: u.completion_tokens,
-      total_tokens: u.total_tokens
-    } : null
-  };
+  throw new Error(`Chat tool loop exceeded ${MAX_TOOL_ROUNDS} rounds`);
 }
 var commonjsGlobal = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : {};
 var dist = {};
@@ -26304,14 +26405,35 @@ function mergeDedupeAndCapSources(docsHits, chatHits, maxSourceTokens) {
     sourcesBlock: lines.join("\n")
   };
 }
-function buildRagSystemPreamble(profileLines, sourcesBlock) {
+function buildRagSystemPreamble(profileLines, sourcesBlock, memorySections) {
   const parts = [
     "You are Bestfriend, a helpful personal assistant with access to the user library and past chats.",
     "When Sources are relevant, use them and cite with [doc:filename#chunkIndex] or [chat:title@YYYY-MM-DD].",
+    "Use the provided tools when appropriate: propose_reminder / propose_suggestion for actionable items, remember_about_user for stable personalization facts.",
+    "Never claim a reminder was scheduled until the user accepts it in the app.",
     ...profileLines,
+    ...memorySections,
     sourcesBlock
   ].filter((p) => p.length > 0);
   return parts.join("\n\n");
+}
+function buildMemorySections(activeMemories, suppressedMemoryIds) {
+  const lines = [];
+  if (activeMemories.length > 0) {
+    lines.push(
+      ["## Active memories", ...activeMemories.map((m) => `- ${m}`)].join("\n")
+    );
+  }
+  if (suppressedMemoryIds.length > 0) {
+    lines.push(
+      [
+        "## Do not re-record",
+        "The user removed these memory IDs — never call remember_about_user to restate the same facts:",
+        suppressedMemoryIds.map((id) => `- ${id}`).join("\n")
+      ].join("\n")
+    );
+  }
+  return lines;
 }
 function toOpenAiHistory(messages) {
   return messages.map(
@@ -26320,6 +26442,140 @@ function toOpenAiHistory(messages) {
 }
 function maxSourceTokenBudget(retrievalChunkSize) {
   return Math.min(8e3, Math.max(2e3, retrievalChunkSize * 12));
+}
+const RECURRENCE_ENUM = ["one_off", "daily", "weekly", "monthly"];
+const CHAT_FUNCTION_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "propose_reminder",
+      description: "Propose a one-off or recurring reminder for the user. The user must accept it in the app before it is scheduled.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "due_at", "timezone", "recurrence", "confidence"],
+        properties: {
+          title: { type: "string" },
+          due_at: {
+            type: "string",
+            description: "ISO 8601 local datetime without timezone offset"
+          },
+          timezone: { type: "string", description: "IANA timezone, e.g. Europe/Helsinki" },
+          recurrence: { type: "string", enum: [...RECURRENCE_ENUM] },
+          notes: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "propose_suggestion",
+      description: "Propose a suggested next action or follow-up for the user to confirm.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "confidence"],
+        properties: {
+          title: { type: "string" },
+          details: { type: "string" },
+          confidence: { type: "number", minimum: 0, maximum: 1 }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "remember_about_user",
+      description: "Store one short durable fact about the user for personalization. Do not use for secrets.",
+      strict: true,
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        required: ["content", "reason"],
+        properties: {
+          content: {
+            type: "string",
+            description: "One short fact about the user"
+          },
+          reason: { type: "string", description: "Why this fact is worth remembering" }
+        }
+      }
+    }
+  }
+];
+const RECURRENCE$1 = ["one_off", "daily", "weekly", "monthly"];
+function isReminderRecurrence(s) {
+  return RECURRENCE$1.includes(s);
+}
+function parseJsonObject(rawJson) {
+  try {
+    const parsed = JSON.parse(rawJson);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function parseProposeReminderArguments(rawJson) {
+  const o = parseJsonObject(rawJson);
+  if (!o) return null;
+  const title = o["title"];
+  const due_at = o["due_at"];
+  const timezone = o["timezone"];
+  const recurrence = o["recurrence"];
+  const confidence = o["confidence"];
+  if (typeof title !== "string" || title.trim() === "") return null;
+  if (typeof due_at !== "string" || due_at.trim() === "") return null;
+  if (typeof timezone !== "string" || timezone.trim() === "") return null;
+  if (typeof recurrence !== "string" || !isReminderRecurrence(recurrence)) return null;
+  if (typeof confidence !== "number" || confidence < 0 || confidence > 1 || !Number.isFinite(confidence)) {
+    return null;
+  }
+  const notesRaw = o["notes"];
+  let notes = null;
+  if (notesRaw !== void 0 && notesRaw !== null) {
+    if (typeof notesRaw !== "string") return null;
+    notes = notesRaw;
+  }
+  return {
+    title: title.trim(),
+    due_at: due_at.trim(),
+    timezone: timezone.trim(),
+    recurrence,
+    notes,
+    confidence
+  };
+}
+function parseProposeSuggestionArguments(rawJson) {
+  const o = parseJsonObject(rawJson);
+  if (!o) return null;
+  const title = o["title"];
+  const confidence = o["confidence"];
+  if (typeof title !== "string" || title.trim() === "") return null;
+  if (typeof confidence !== "number" || confidence < 0 || confidence > 1 || !Number.isFinite(confidence)) {
+    return null;
+  }
+  const detailsRaw = o["details"];
+  let details = null;
+  if (detailsRaw !== void 0 && detailsRaw !== null) {
+    if (typeof detailsRaw !== "string") return null;
+    details = detailsRaw;
+  }
+  return { title: title.trim(), details, confidence };
+}
+function parseRememberAboutUserArguments(rawJson) {
+  const o = parseJsonObject(rawJson);
+  if (!o) return null;
+  const content = o["content"];
+  const reason = o["reason"];
+  if (typeof content !== "string" || content.trim() === "") return null;
+  if (typeof reason !== "string" || reason.trim() === "") return null;
+  return { content: content.trim(), reason: reason.trim() };
 }
 function getSettingJson(db, key, fallback) {
   const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key);
@@ -26366,9 +26622,10 @@ class SettingsRepo {
     );
   }
   loadNonSecretSettings() {
+    const storedRetrieval = getSettingJson(this.db, "retrieval", DEFAULT_SETTINGS.retrieval);
     return {
       models: getSettingJson(this.db, "models", DEFAULT_SETTINGS.models),
-      retrieval: getSettingJson(this.db, "retrieval", DEFAULT_SETTINGS.retrieval),
+      retrieval: { ...DEFAULT_SETTINGS.retrieval, ...storedRetrieval },
       spend: getSettingJson(this.db, "spend", DEFAULT_SETTINGS.spend),
       theme: getSettingJson(this.db, "theme", DEFAULT_SETTINGS.theme),
       reminders_mirroring: getSettingJson(
@@ -26472,11 +26729,20 @@ function validatePatch(patch) {
   }
   if ("retrieval" in p && p["retrieval"] !== void 0) {
     const r = p["retrieval"];
-    const fields = ["top_k_docs", "top_k_chat", "chunk_size_tokens", "chunk_overlap_tokens"];
-    for (const field of fields) {
-      if (r[field] !== void 0 && (typeof r[field] !== "number" || r[field] < 1)) {
-        throw new Error(`retrieval.${field} must be a positive number`);
-      }
+    if (r["top_k_docs"] !== void 0 && (typeof r["top_k_docs"] !== "number" || r["top_k_docs"] < 1)) {
+      throw new Error("retrieval.top_k_docs must be >= 1");
+    }
+    if (r["top_k_chat"] !== void 0 && (typeof r["top_k_chat"] !== "number" || r["top_k_chat"] < 0)) {
+      throw new Error("retrieval.top_k_chat must be >= 0");
+    }
+    if (r["chunk_size_tokens"] !== void 0 && (typeof r["chunk_size_tokens"] !== "number" || r["chunk_size_tokens"] < 1)) {
+      throw new Error("retrieval.chunk_size_tokens must be >= 1");
+    }
+    if (r["chunk_overlap_tokens"] !== void 0 && (typeof r["chunk_overlap_tokens"] !== "number" || r["chunk_overlap_tokens"] < 0)) {
+      throw new Error("retrieval.chunk_overlap_tokens must be >= 0");
+    }
+    if (r["proposal_confidence_threshold"] !== void 0 && (typeof r["proposal_confidence_threshold"] !== "number" || r["proposal_confidence_threshold"] < 0 || r["proposal_confidence_threshold"] > 1)) {
+      throw new Error("retrieval.proposal_confidence_threshold must be between 0 and 1");
     }
   }
   if ("spend" in p && p["spend"] !== void 0) {
@@ -27294,18 +27560,28 @@ class MessageRepo {
   insert(params) {
     const id = crypto$1.randomUUID();
     const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const memCap = params.memoriesCaptured ?? 0;
     const traceJson = params.retrievalTrace != null ? JSON.stringify(params.retrievalTrace) : null;
     this.db.prepare(`
-        INSERT INTO messages (id, conversation_id, role, content, retrieval_trace_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(id, params.conversationId, params.role, params.content, traceJson, createdAt);
+        INSERT INTO messages (id, conversation_id, role, content, retrieval_trace_json, created_at, memories_captured)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+      id,
+      params.conversationId,
+      params.role,
+      params.content,
+      traceJson,
+      createdAt,
+      memCap
+    );
     return {
       id,
       conversation_id: params.conversationId,
       role: params.role,
       content: params.content,
       created_at: createdAt,
-      retrieval_trace: params.retrievalTrace
+      retrieval_trace: params.retrievalTrace,
+      memories_captured: memCap
     };
   }
   setPineconeVectorId(messageId, vectorId) {
@@ -27351,7 +27627,166 @@ function rowToMessage(row) {
     role: row.role,
     content: row.content,
     created_at: row.created_at,
-    retrieval_trace
+    retrieval_trace,
+    memories_captured: row.memories_captured ?? 0
+  };
+}
+class MemoryRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  insert(params) {
+    const id = crypto$1.randomUUID();
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(
+      `
+        INSERT INTO memories (id, content, source_message_id, pinned, created_at)
+        VALUES (?, ?, ?, 0, ?)
+      `
+    ).run(id, params.content, params.sourceMessageId, createdAt);
+    return {
+      id,
+      content: params.content,
+      source_message_id: params.sourceMessageId,
+      pinned: false,
+      created_at: createdAt,
+      deleted_at: null
+    };
+  }
+  listActive() {
+    const rows = this.db.prepare(
+      `
+        SELECT * FROM memories
+        WHERE deleted_at IS NULL
+        ORDER BY pinned DESC, datetime(created_at) DESC
+      `
+    ).all();
+    return rows.map(rowToMemory);
+  }
+  listDeletedIds() {
+    const rows = this.db.prepare(`SELECT id FROM memories WHERE deleted_at IS NOT NULL`).all();
+    return rows.map((r) => r.id);
+  }
+  updateContent(id, content) {
+    this.db.prepare(`UPDATE memories SET content = ? WHERE id = ? AND deleted_at IS NULL`).run(
+      content,
+      id
+    );
+  }
+  setPinned(id, pinned) {
+    this.db.prepare(`UPDATE memories SET pinned = ? WHERE id = ? AND deleted_at IS NULL`).run(
+      pinned ? 1 : 0,
+      id
+    );
+  }
+  softDelete(id) {
+    const at = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(`UPDATE memories SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`).run(at, id);
+  }
+  deleteBySourceMessageIdForRollback(sourceMessageId) {
+    this.db.prepare(`DELETE FROM memories WHERE source_message_id = ?`).run(sourceMessageId);
+  }
+}
+function rowToMemory(row) {
+  return {
+    id: row.id,
+    content: row.content,
+    source_message_id: row.source_message_id,
+    pinned: row.pinned !== 0,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at
+  };
+}
+class ProposalRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  insertProposed(params) {
+    const id = crypto$1.randomUUID();
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(
+      `
+        INSERT INTO proposals (id, message_id, type, payload_json, status, created_at)
+        VALUES (?, ?, ?, ?, 'proposed', ?)
+      `
+    ).run(id, params.messageId, params.type, JSON.stringify(params.payload), createdAt);
+    return rowToProposal({
+      id,
+      message_id: params.messageId,
+      type: params.type,
+      payload_json: JSON.stringify(params.payload),
+      status: "proposed",
+      created_at: createdAt,
+      decided_at: null
+    });
+  }
+  listPendingForConversation(conversationId, minConfidence) {
+    const rows = this.db.prepare(
+      `
+        SELECT p.id, p.message_id, p.type, p.payload_json, p.status, p.created_at, p.decided_at
+        FROM proposals p
+        INNER JOIN messages m ON m.id = p.message_id
+        WHERE m.conversation_id = ?
+          AND p.status = 'proposed'
+        ORDER BY datetime(p.created_at) ASC
+      `
+    ).all(conversationId);
+    const out = [];
+    for (const row of rows) {
+      const proposal = rowToProposal(row);
+      const c = confidenceFromPayload(proposal.payload);
+      if (c >= minConfidence) out.push(proposal);
+    }
+    return out;
+  }
+  getById(id) {
+    const row = this.db.prepare(`SELECT * FROM proposals WHERE id = ?`).get(id);
+    return row ? rowToProposal(row) : null;
+  }
+  setStatus(id, status) {
+    const decidedAt = status === "proposed" ? null : (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(
+      `
+        UPDATE proposals SET status = ?, decided_at = ?
+        WHERE id = ?
+      `
+    ).run(status, decidedAt, id);
+  }
+  listPendingForMessage(messageId, minConfidence) {
+    const rows = this.db.prepare(
+      `
+        SELECT * FROM proposals
+        WHERE message_id = ? AND status = 'proposed'
+        ORDER BY datetime(created_at) ASC
+      `
+    ).all(messageId);
+    const out = [];
+    for (const row of rows) {
+      const proposal = rowToProposal(row);
+      const c = confidenceFromPayload(proposal.payload);
+      if (c >= minConfidence) out.push(proposal);
+    }
+    return out;
+  }
+}
+function confidenceFromPayload(payload) {
+  return payload.confidence;
+}
+function rowToProposal(row) {
+  let payload;
+  try {
+    payload = JSON.parse(row.payload_json);
+  } catch {
+    throw new Error(`Invalid proposal payload JSON for ${row.id}`);
+  }
+  return {
+    id: row.id,
+    message_id: row.message_id,
+    type: row.type,
+    payload,
+    status: row.status,
+    created_at: row.created_at,
+    decided_at: row.decided_at
   };
 }
 function validateString(value, name2) {
@@ -27389,8 +27824,11 @@ function assertCollectionsExist(db, ids) {
     if (!known.has(id)) throw new Error(`Collection ${id} not found`);
   }
 }
-function rollbackPartialTurn(msgRepo, userMessageId, assistantMessageId) {
-  if (assistantMessageId) msgRepo.deleteById(assistantMessageId);
+function rollbackPartialTurn(msgRepo, memoryRepo, userMessageId, assistantMessageId) {
+  if (assistantMessageId) {
+    memoryRepo.deleteBySourceMessageIdForRollback(assistantMessageId);
+    msgRepo.deleteById(assistantMessageId);
+  }
   msgRepo.deleteById(userMessageId);
 }
 function registerChatHandlers(win) {
@@ -27428,6 +27866,8 @@ function registerChatHandlers(win) {
       const msgRepo = new MessageRepo(db);
       const settingsRepo = new SettingsRepo(db);
       const ledgerRepo = new UsageLedgerRepo(db);
+      const memoryRepo = new MemoryRepo(db);
+      const proposalRepo = new ProposalRepo(db);
       const conv = convRepo.getById(conversationId);
       if (!conv) throw new Error(`Conversation ${conversationId} not found`);
       const { models: models2, retrieval, spend } = settingsRepo.loadNonSecretSettings();
@@ -27499,7 +27939,11 @@ function registerChatHandlers(win) {
           profile.tone_preferences ? `Tone preferences: ${profile.tone_preferences}` : "",
           profile.current_projects.length > 0 ? `Current projects: ${profile.current_projects.join(", ")}` : ""
         ].filter((line) => line.length > 0);
-        const systemContent = buildRagSystemPreamble(profileLines, sourcesBlock);
+        const activeMemories = memoryRepo.listActive();
+        const memoryLines = activeMemories.map((m) => m.content);
+        const suppressedIds = memoryRepo.listDeletedIds();
+        const memorySections = buildMemorySections(memoryLines, suppressedIds);
+        const systemContent = buildRagSystemPreamble(profileLines, sourcesBlock, memorySections);
         const historyRows = msgRepo.getRecentForApi(conversationId, 48);
         const historyParams = toOpenAiHistory(
           historyRows.flatMap(
@@ -27507,43 +27951,106 @@ function registerChatHandlers(win) {
           )
         );
         const openaiMessages = [{ role: "system", content: systemContent }, ...historyParams];
-        const result = await streamChatCompletion(
+        let chatLedgerRounds = 0;
+        const result = await streamChatWithToolLoop(
           openai,
-          { model: models2.chat_model, messages: openaiMessages },
+          {
+            model: models2.chat_model,
+            messages: openaiMessages,
+            tools: CHAT_FUNCTION_TOOLS
+          },
           (delta) => {
             sendStream({ type: "token", conversationId, text: delta });
+          },
+          (u) => {
+            chatLedgerRounds += 1;
+            const chatCost = estimateChatCompletionCostUsd(
+              u.prompt_tokens,
+              u.completion_tokens,
+              models2.chat_model
+            );
+            ledgerRepo.record({
+              provider: "openai",
+              kind: "chat",
+              tokens_in: u.prompt_tokens,
+              tokens_out: u.completion_tokens,
+              units: null,
+              est_cost_usd: chatCost
+            });
           }
         );
-        const usage = result.usage;
-        let promptTokens = usage?.prompt_tokens ?? 0;
-        let completionTokens = usage?.completion_tokens ?? 0;
-        if (!usage) {
-          promptTokens = estimateTokens(systemContent) + historyParams.reduce(
+        if (chatLedgerRounds === 0 && !result.usage) {
+          const promptTokens = estimateTokens(systemContent) + historyParams.reduce(
             (s, m) => s + estimateTokens(typeof m.content === "string" ? m.content : ""),
             0
           );
-          completionTokens = estimateTokens(result.fullText);
+          const completionTokens = estimateTokens(result.fullText);
+          const chatCost = estimateChatCompletionCostUsd(
+            promptTokens,
+            completionTokens,
+            models2.chat_model
+          );
+          ledgerRepo.record({
+            provider: "openai",
+            kind: "chat",
+            tokens_in: promptTokens,
+            tokens_out: completionTokens,
+            units: null,
+            est_cost_usd: chatCost
+          });
         }
-        const chatCost = estimateChatCompletionCostUsd(
-          promptTokens,
-          completionTokens,
-          models2.chat_model
-        );
-        ledgerRepo.record({
-          provider: "openai",
-          kind: "chat",
-          tokens_in: promptTokens,
-          tokens_out: completionTokens,
-          units: null,
-          est_cost_usd: chatCost
-        });
+        let memoryCount = 0;
+        for (const tc of result.toolCalls) {
+          if (tc.name !== "remember_about_user") continue;
+          const parsed = parseRememberAboutUserArguments(tc.arguments);
+          if (!parsed) {
+            console.warn("[chat] rejected malformed remember_about_user tool call");
+            continue;
+          }
+          memoryCount += 1;
+        }
         const assistantMsg = msgRepo.insert({
           conversationId,
           role: "assistant",
           content: result.fullText,
-          retrievalTrace: trace
+          retrievalTrace: trace,
+          memoriesCaptured: memoryCount
         });
         assistantMessageId = assistantMsg.id;
+        for (const tc of result.toolCalls) {
+          if (tc.name === "propose_reminder") {
+            const parsed = parseProposeReminderArguments(tc.arguments);
+            if (!parsed) {
+              console.warn("[chat] rejected malformed propose_reminder tool call");
+              continue;
+            }
+            proposalRepo.insertProposed({
+              messageId: assistantMsg.id,
+              type: "reminder",
+              payload: parsed
+            });
+          } else if (tc.name === "propose_suggestion") {
+            const parsed = parseProposeSuggestionArguments(tc.arguments);
+            if (!parsed) {
+              console.warn("[chat] rejected malformed propose_suggestion tool call");
+              continue;
+            }
+            proposalRepo.insertProposed({
+              messageId: assistantMsg.id,
+              type: "suggestion",
+              payload: parsed
+            });
+          } else if (tc.name === "remember_about_user") {
+            const parsed = parseRememberAboutUserArguments(tc.arguments);
+            if (!parsed) {
+              console.warn("[chat] rejected malformed remember_about_user tool call");
+              continue;
+            }
+            memoryRepo.insert({ content: parsed.content, sourceMessageId: assistantMsg.id });
+          } else {
+            console.warn("[chat] ignored unknown tool call", tc.name);
+          }
+        }
         const previewTitle = text.length > 56 ? `${text.slice(0, 53).trimEnd()}…` : text;
         convRepo.setTitleIfDefault(conversationId, previewTitle);
         convRepo.touchUpdated(conversationId);
@@ -27593,21 +28100,208 @@ function registerChatHandlers(win) {
         ]);
         msgRepo.setPineconeVectorId(userMsg.id, `msg::${userMsg.id}`);
         msgRepo.setPineconeVectorId(assistantMsg.id, `msg::${assistantMsg.id}`);
+        const turnProposals = proposalRepo.listPendingForMessage(
+          assistantMsg.id,
+          retrieval.proposal_confidence_threshold
+        );
         const turn = {
           message: assistantMsg,
-          proposals: [],
-          memories_captured: 0
+          proposals: turnProposals,
+          memories_captured: memoryCount
         };
         sendStream({ type: "complete", conversationId, turn });
         return turn;
       } catch (err) {
-        rollbackPartialTurn(msgRepo, userMsg.id, assistantMessageId);
+        rollbackPartialTurn(msgRepo, memoryRepo, userMsg.id, assistantMessageId);
         const message = err instanceof Error ? err.message : String(err);
         sendStream({ type: "error", conversationId, message });
         throw err;
       }
     }
   );
+}
+class ReminderRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  insertScheduled(params) {
+    const id = crypto$1.randomUUID();
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    this.db.prepare(
+      `
+        INSERT INTO reminders (id, title, notes, due_at, timezone, recurrence, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'scheduled', ?)
+      `
+    ).run(
+      id,
+      params.title,
+      params.notes,
+      params.due_at,
+      params.timezone,
+      params.recurrence,
+      createdAt
+    );
+    return rowToReminder({
+      id,
+      title: params.title,
+      notes: params.notes,
+      due_at: params.due_at,
+      timezone: params.timezone,
+      recurrence: params.recurrence,
+      status: "scheduled",
+      snoozed_until: null,
+      eventkit_id: null,
+      created_at: createdAt,
+      fired_at: null
+    });
+  }
+}
+function rowToReminder(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    notes: row.notes,
+    due_at: row.due_at,
+    timezone: row.timezone,
+    recurrence: row.recurrence,
+    status: row.status,
+    snoozed_until: row.snoozed_until,
+    eventkit_id: row.eventkit_id,
+    created_at: row.created_at,
+    fired_at: row.fired_at
+  };
+}
+function validateId$1(value, name2) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name2} must be a non-empty string`);
+  }
+  return value.trim();
+}
+const RECURRENCE = ["one_off", "daily", "weekly", "monthly"];
+function isRecurrence(s) {
+  return RECURRENCE.includes(s);
+}
+function extractReminderEdit(raw) {
+  const o = raw;
+  const e = {};
+  if (typeof o["title"] === "string") e.title = o["title"].trim();
+  if (typeof o["due_at"] === "string") e.due_at = o["due_at"].trim();
+  if (typeof o["timezone"] === "string") e.timezone = o["timezone"].trim();
+  if (typeof o["recurrence"] === "string" && isRecurrence(o["recurrence"])) {
+    e.recurrence = o["recurrence"];
+  }
+  if ("notes" in o) {
+    if (o["notes"] === null) e.notes = null;
+    else if (typeof o["notes"] === "string") e.notes = o["notes"];
+  }
+  return e;
+}
+function isReminderPayload(p) {
+  return "due_at" in p;
+}
+function mergeReminderPayload(base2, edited) {
+  const merged = {
+    title: edited.title ?? base2.title,
+    due_at: edited.due_at ?? base2.due_at,
+    timezone: edited.timezone ?? base2.timezone,
+    recurrence: edited.recurrence ?? base2.recurrence,
+    notes: edited.notes !== void 0 ? edited.notes : base2.notes,
+    confidence: base2.confidence
+  };
+  const reparsed = parseProposeReminderArguments(JSON.stringify(merged));
+  if (!reparsed) throw new Error("Invalid edited reminder fields");
+  return reparsed;
+}
+function registerProposalHandlers() {
+  electron.ipcMain.handle(
+    "proposals:list",
+    async (_e, rawConvId) => {
+      const conversationId = validateId$1(rawConvId, "conversationId");
+      const db = getDb();
+      const { retrieval } = new SettingsRepo(db).loadNonSecretSettings();
+      const threshold = retrieval.proposal_confidence_threshold;
+      return new ProposalRepo(db).listPendingForConversation(conversationId, threshold);
+    }
+  );
+  electron.ipcMain.handle(
+    "proposals:accept",
+    async (_e, rawProposalId, rawEdited) => {
+      const proposalId = validateId$1(rawProposalId, "proposalId");
+      const db = getDb();
+      const repo = new ProposalRepo(db);
+      const proposal = repo.getById(proposalId);
+      if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
+      if (proposal.status !== "proposed") throw new Error("Proposal is no longer pending");
+      if (proposal.type === "reminder") {
+        let patch = {};
+        if (rawEdited !== void 0 && rawEdited !== null) {
+          if (typeof rawEdited !== "object" || Array.isArray(rawEdited)) {
+            throw new Error("edited reminder must be an object");
+          }
+          patch = extractReminderEdit(rawEdited);
+        }
+        if (!isReminderPayload(proposal.payload)) {
+          throw new Error("Corrupt reminder proposal");
+        }
+        const payload = mergeReminderPayload(proposal.payload, patch);
+        new ReminderRepo(db).insertScheduled({
+          title: payload.title,
+          notes: payload.notes,
+          due_at: payload.due_at,
+          timezone: payload.timezone,
+          recurrence: payload.recurrence
+        });
+        repo.setStatus(proposalId, "accepted");
+        return;
+      }
+      repo.setStatus(proposalId, "accepted");
+    }
+  );
+  electron.ipcMain.handle("proposals:reject", async (_e, rawProposalId) => {
+    const proposalId = validateId$1(rawProposalId, "proposalId");
+    const repo = new ProposalRepo(getDb());
+    const proposal = repo.getById(proposalId);
+    if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
+    if (proposal.status !== "proposed") throw new Error("Proposal is no longer pending");
+    repo.setStatus(proposalId, "rejected");
+  });
+}
+function validateId(value, name2) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name2} must be a non-empty string`);
+  }
+  return value.trim();
+}
+function validateMemoryContent(value) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error("content must be a non-empty string");
+  }
+  return value.trim();
+}
+function registerMemoryHandlers() {
+  electron.ipcMain.handle("memories:list", async () => {
+    return new MemoryRepo(getDb()).listActive();
+  });
+  electron.ipcMain.handle(
+    "memories:update",
+    async (_e, rawId, rawContent) => {
+      const id = validateId(rawId, "id");
+      const content = validateMemoryContent(rawContent);
+      new MemoryRepo(getDb()).updateContent(id, content);
+    }
+  );
+  electron.ipcMain.handle(
+    "memories:pin",
+    async (_e, rawId, rawPinned) => {
+      const id = validateId(rawId, "id");
+      if (typeof rawPinned !== "boolean") throw new Error("pinned must be a boolean");
+      new MemoryRepo(getDb()).setPinned(id, rawPinned);
+    }
+  );
+  electron.ipcMain.handle("memories:delete", async (_e, rawId) => {
+    const id = validateId(rawId, "id");
+    new MemoryRepo(getDb()).softDelete(id);
+  });
 }
 function stateFile() {
   return require$$4.join(electron.app.getPath("userData"), "window-state.json");
@@ -27755,6 +28449,8 @@ function registerIpcHandlers(win) {
   registerSettingsHandlers();
   registerLibraryHandlers();
   registerChatHandlers(win);
+  registerProposalHandlers();
+  registerMemoryHandlers();
   initJobQueue(() => win.webContents);
 }
 function sendTheme(win) {

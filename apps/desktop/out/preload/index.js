@@ -58,10 +58,9 @@ const api = {
     electron.ipcRenderer.on("chat:stream", handler);
     return () => electron.ipcRenderer.removeListener("chat:stream", handler);
   },
-  // Proposals (Phase 4)
-  listProposals: () => notImplemented(),
-  acceptProposal: () => notImplemented(),
-  rejectProposal: () => notImplemented(),
+  listProposals: (conversationId) => electron.ipcRenderer.invoke("proposals:list", conversationId),
+  acceptProposal: (proposalId, edited) => electron.ipcRenderer.invoke("proposals:accept", proposalId, edited ?? null),
+  rejectProposal: (proposalId) => electron.ipcRenderer.invoke("proposals:reject", proposalId),
   // Reminders (Phase 5)
   listReminders: () => notImplemented(),
   snoozeReminder: () => notImplemented(),
@@ -75,11 +74,10 @@ const api = {
   listInbox: () => notImplemented(),
   triageInboxItem: () => notImplemented(),
   openCaptureWindow: () => notImplemented(),
-  // Memories (Phase 4)
-  listMemories: () => notImplemented(),
-  updateMemory: () => notImplemented(),
-  pinMemory: () => notImplemented(),
-  deleteMemory: () => notImplemented(),
+  listMemories: () => electron.ipcRenderer.invoke("memories:list"),
+  updateMemory: (id, content) => electron.ipcRenderer.invoke("memories:update", id, content),
+  pinMemory: (id, pinned) => electron.ipcRenderer.invoke("memories:pin", id, pinned),
+  deleteMemory: (id) => electron.ipcRenderer.invoke("memories:delete", id),
   // Settings
   getSettings: () => electron.ipcRenderer.invoke("settings:get"),
   setSettings: (patch) => electron.ipcRenderer.invoke("settings:set", patch),

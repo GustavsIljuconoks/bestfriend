@@ -10,11 +10,12 @@ import {
   createOpenAIClient,
   createPineconeClient,
   embedBatch,
-  streamChatCompletion,
+  streamChatWithToolLoop,
   queryDocsForRag,
   queryChatHistoryForRag,
   mergeDedupeAndCapSources,
   buildRagSystemPreamble,
+  buildMemorySections,
   toOpenAiHistory,
   maxSourceTokenBudget,
   DEFAULT_PINECONE_INDEX_NAME,
@@ -24,6 +25,10 @@ import {
   estimateChatCompletionCostUsd,
   estimateTokens,
   MAX_CHAT_USER_MESSAGE_CHARS,
+  CHAT_FUNCTION_TOOLS,
+  parseProposeReminderArguments,
+  parseProposeSuggestionArguments,
+  parseRememberAboutUserArguments,
 } from '@bestfriend/core'
 import { getDb } from '../db/index.js'
 import { ConversationRepo } from '../db/repos/ConversationRepo.js'
@@ -31,6 +36,8 @@ import { MessageRepo } from '../db/repos/MessageRepo.js'
 import { SettingsRepo } from '../db/repos/SettingsRepo.js'
 import { UsageLedgerRepo } from '../db/repos/UsageLedgerRepo.js'
 import { CollectionRepo } from '../db/repos/CollectionRepo.js'
+import { MemoryRepo } from '../db/repos/MemoryRepo.js'
+import { ProposalRepo } from '../db/repos/ProposalRepo.js'
 import { retrieveKey } from '../security/safeStorage.js'
 
 function validateString(value: unknown, name: string): string {
@@ -74,10 +81,14 @@ function assertCollectionsExist(db: ReturnType<typeof getDb>, ids: string[]): vo
 
 function rollbackPartialTurn(
   msgRepo: MessageRepo,
+  memoryRepo: MemoryRepo,
   userMessageId: string,
   assistantMessageId: string | null,
 ): void {
-  if (assistantMessageId) msgRepo.deleteById(assistantMessageId)
+  if (assistantMessageId) {
+    memoryRepo.deleteBySourceMessageIdForRollback(assistantMessageId)
+    msgRepo.deleteById(assistantMessageId)
+  }
   msgRepo.deleteById(userMessageId)
 }
 
@@ -121,6 +132,8 @@ export function registerChatHandlers(win: BrowserWindow): void {
       const msgRepo = new MessageRepo(db)
       const settingsRepo = new SettingsRepo(db)
       const ledgerRepo = new UsageLedgerRepo(db)
+      const memoryRepo = new MemoryRepo(db)
+      const proposalRepo = new ProposalRepo(db)
 
       const conv = convRepo.getById(conversationId)
       if (!conv) throw new Error(`Conversation ${conversationId} not found`)
@@ -210,7 +223,12 @@ export function registerChatHandlers(win: BrowserWindow): void {
             : '',
         ].filter((line) => line.length > 0)
 
-        const systemContent = buildRagSystemPreamble(profileLines, sourcesBlock)
+        const activeMemories = memoryRepo.listActive()
+        const memoryLines = activeMemories.map((m) => m.content)
+        const suppressedIds = memoryRepo.listDeletedIds()
+        const memorySections = buildMemorySections(memoryLines, suppressedIds)
+
+        const systemContent = buildRagSystemPreamble(profileLines, sourcesBlock, memorySections)
         const historyRows = msgRepo.getRecentForApi(conversationId, 48)
         const historyParams = toOpenAiHistory(
           historyRows.flatMap((m) =>
@@ -222,48 +240,112 @@ export function registerChatHandlers(win: BrowserWindow): void {
 
         const openaiMessages = [{ role: 'system' as const, content: systemContent }, ...historyParams]
 
-        const result = await streamChatCompletion(
+        let chatLedgerRounds = 0
+        const result = await streamChatWithToolLoop(
           openai,
-          { model: models.chat_model, messages: openaiMessages },
+          {
+            model: models.chat_model,
+            messages: openaiMessages,
+            tools: CHAT_FUNCTION_TOOLS,
+          },
           (delta) => {
             sendStream({ type: 'token', conversationId, text: delta })
           },
+          (u) => {
+            chatLedgerRounds += 1
+            const chatCost = estimateChatCompletionCostUsd(
+              u.prompt_tokens,
+              u.completion_tokens,
+              models.chat_model,
+            )
+            ledgerRepo.record({
+              provider: 'openai',
+              kind: 'chat',
+              tokens_in: u.prompt_tokens,
+              tokens_out: u.completion_tokens,
+              units: null,
+              est_cost_usd: chatCost,
+            })
+          },
         )
 
-        const usage = result.usage
-        let promptTokens = usage?.prompt_tokens ?? 0
-        let completionTokens = usage?.completion_tokens ?? 0
-        if (!usage) {
-          promptTokens =
+        if (chatLedgerRounds === 0 && !result.usage) {
+          const promptTokens =
             estimateTokens(systemContent) +
             historyParams.reduce(
               (s, m) => s + estimateTokens(typeof m.content === 'string' ? m.content : ''),
               0,
             )
-          completionTokens = estimateTokens(result.fullText)
+          const completionTokens = estimateTokens(result.fullText)
+          const chatCost = estimateChatCompletionCostUsd(
+            promptTokens,
+            completionTokens,
+            models.chat_model,
+          )
+          ledgerRepo.record({
+            provider: 'openai',
+            kind: 'chat',
+            tokens_in: promptTokens,
+            tokens_out: completionTokens,
+            units: null,
+            est_cost_usd: chatCost,
+          })
         }
 
-        const chatCost = estimateChatCompletionCostUsd(
-          promptTokens,
-          completionTokens,
-          models.chat_model,
-        )
-        ledgerRepo.record({
-          provider: 'openai',
-          kind: 'chat',
-          tokens_in: promptTokens,
-          tokens_out: completionTokens,
-          units: null,
-          est_cost_usd: chatCost,
-        })
+        let memoryCount = 0
+        for (const tc of result.toolCalls) {
+          if (tc.name !== 'remember_about_user') continue
+          const parsed = parseRememberAboutUserArguments(tc.arguments)
+          if (!parsed) {
+            console.warn('[chat] rejected malformed remember_about_user tool call')
+            continue
+          }
+          memoryCount += 1
+        }
 
         const assistantMsg = msgRepo.insert({
           conversationId,
           role: 'assistant',
           content: result.fullText,
           retrievalTrace: trace,
+          memoriesCaptured: memoryCount,
         })
         assistantMessageId = assistantMsg.id
+
+        for (const tc of result.toolCalls) {
+          if (tc.name === 'propose_reminder') {
+            const parsed = parseProposeReminderArguments(tc.arguments)
+            if (!parsed) {
+              console.warn('[chat] rejected malformed propose_reminder tool call')
+              continue
+            }
+            proposalRepo.insertProposed({
+              messageId: assistantMsg.id,
+              type: 'reminder',
+              payload: parsed,
+            })
+          } else if (tc.name === 'propose_suggestion') {
+            const parsed = parseProposeSuggestionArguments(tc.arguments)
+            if (!parsed) {
+              console.warn('[chat] rejected malformed propose_suggestion tool call')
+              continue
+            }
+            proposalRepo.insertProposed({
+              messageId: assistantMsg.id,
+              type: 'suggestion',
+              payload: parsed,
+            })
+          } else if (tc.name === 'remember_about_user') {
+            const parsed = parseRememberAboutUserArguments(tc.arguments)
+            if (!parsed) {
+              console.warn('[chat] rejected malformed remember_about_user tool call')
+              continue
+            }
+            memoryRepo.insert({ content: parsed.content, sourceMessageId: assistantMsg.id })
+          } else {
+            console.warn('[chat] ignored unknown tool call', tc.name)
+          }
+        }
 
         const previewTitle =
           text.length > 56 ? `${text.slice(0, 53).trimEnd()}…` : text
@@ -321,15 +403,19 @@ export function registerChatHandlers(win: BrowserWindow): void {
         msgRepo.setPineconeVectorId(userMsg.id, `msg::${userMsg.id}`)
         msgRepo.setPineconeVectorId(assistantMsg.id, `msg::${assistantMsg.id}`)
 
+        const turnProposals = proposalRepo.listPendingForMessage(
+          assistantMsg.id,
+          retrieval.proposal_confidence_threshold,
+        )
         const turn: AssistantTurn = {
           message: assistantMsg,
-          proposals: [],
-          memories_captured: 0,
+          proposals: turnProposals,
+          memories_captured: memoryCount,
         }
         sendStream({ type: 'complete', conversationId, turn })
         return turn
       } catch (err) {
-        rollbackPartialTurn(msgRepo, userMsg.id, assistantMessageId)
+        rollbackPartialTurn(msgRepo, memoryRepo, userMsg.id, assistantMessageId)
         const message = err instanceof Error ? err.message : String(err)
         sendStream({ type: 'error', conversationId, message })
         throw err

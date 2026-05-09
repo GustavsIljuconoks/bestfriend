@@ -6,6 +6,7 @@ import { migration001 } from './migrations/001_settings_and_profile.js'
 import { migration002 } from './migrations/002_usage_ledger.js'
 import { migration003 } from './migrations/003_documents_and_collections.js'
 import { migration004 } from './migrations/004_conversations_and_messages.js'
+import { migration005 } from './migrations/005_proposals_memories_reminders.js'
 
 let _db: Database.Database | null = null
 
@@ -24,7 +25,7 @@ export function initDb(): Database.Database {
   _db.pragma('foreign_keys = ON')
   _db.pragma('busy_timeout = 5000')
 
-  runMigrations(_db, [migration001, migration002, migration003, migration004])
+  runMigrations(_db, [migration001, migration002, migration003, migration004, migration005])
 
   return _db
 }

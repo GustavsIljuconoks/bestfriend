@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,8 +8,10 @@ import {
   Plus,
   Books,
 } from '@phosphor-icons/react'
-import { MAX_CHAT_USER_MESSAGE_CHARS, type Message, type RetrievalTrace } from '@bestfriend/core'
+import { MAX_CHAT_USER_MESSAGE_CHARS, type Message, type Proposal, type RetrievalTrace } from '@bestfriend/core'
 import { SourcesDrawer } from '@renderer/components/chat/SourcesDrawer'
+import { ProposalCard } from '@renderer/components/chat/ProposalCard'
+import { AcceptReminderDialog } from '@renderer/components/chat/AcceptReminderDialog'
 import { useChatStreamStore } from '@renderer/state/chatStreamStore'
 import {
   useConversations,
@@ -20,6 +22,13 @@ import {
   messagesQueryKey,
 } from '@renderer/state/queries/chat'
 import { useCollections } from '@renderer/state/queries/library'
+import {
+  useProposals,
+  useAcceptProposal,
+  useRejectProposal,
+  proposalsQueryKey,
+} from '@renderer/state/queries/proposals'
+import { MEMORIES_QUERY_KEY } from '@renderer/state/queries/memories'
 
 function formatConvTime(iso: string | null): string {
   if (!iso) return '—'
@@ -35,28 +44,33 @@ function MessageBubble({
   message,
   onShowSources,
   showSourcesAction,
+  appendix,
 }: {
   message: Message
   onShowSources: (trace: RetrievalTrace) => void
   showSourcesAction: boolean
+  appendix?: ReactNode
 }) {
   const isUser = message.role === 'user'
   return (
     <div className={`chat-message-row ${isUser ? 'chat-message-row-user' : 'chat-message-row-assistant'}`}>
-      <div className={`chat-bubble ${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
-        <div className={isUser ? 'chat-bubble-text' : 'chat-bubble-text chat-bubble-text-serif'}>
-          {message.content}
+      <div className={`chat-turn-stack${isUser ? ' chat-turn-stack-user' : ''}`}>
+        <div className={`chat-bubble ${isUser ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}>
+          <div className={isUser ? 'chat-bubble-text' : 'chat-bubble-text chat-bubble-text-serif'}>
+            {message.content}
+          </div>
+          {!isUser && showSourcesAction && message.retrieval_trace ? (
+            <button
+              type="button"
+              className="chat-sources-link"
+              onClick={() => onShowSources(message.retrieval_trace!)}
+            >
+              <Books size={14} weight="regular" aria-hidden />
+              Sources
+            </button>
+          ) : null}
         </div>
-        {!isUser && showSourcesAction && message.retrieval_trace ? (
-          <button
-            type="button"
-            className="chat-sources-link"
-            onClick={() => onShowSources(message.retrieval_trace!)}
-          >
-            <Books size={14} weight="regular" aria-hidden />
-            Sources
-          </button>
-        ) : null}
+        {appendix}
       </div>
     </div>
   )
@@ -87,6 +101,11 @@ export function Chat() {
   const [scopeSelection, setScopeSelection] = useState<string[]>([])
   const [sourcesTrace, setSourcesTrace] = useState<RetrievalTrace | null>(null)
   const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [reminderTarget, setReminderTarget] = useState<Proposal | null>(null)
+
+  const { data: proposals = [] } = useProposals(activeId)
+  const acceptProposal = useAcceptProposal(activeId)
+  const rejectProposal = useRejectProposal(activeId)
 
   const draftTooLong = draft.length > MAX_CHAT_USER_MESSAGE_CHARS
 
@@ -107,6 +126,8 @@ export function Chat() {
       } else if (ev.type === 'complete') {
         st.endStream()
         void queryClient.invalidateQueries({ queryKey: messagesQueryKey(ev.conversationId) })
+        void queryClient.invalidateQueries({ queryKey: proposalsQueryKey(ev.conversationId) })
+        void queryClient.invalidateQueries({ queryKey: MEMORIES_QUERY_KEY })
         void queryClient.invalidateQueries({ queryKey: CONVERSATIONS_QUERY_KEY })
       } else if (ev.type === 'error') {
         st.setError(ev.conversationId, ev.message)
@@ -238,24 +259,53 @@ export function Chat() {
               {msgsLoading ? (
                 <div className="library-loading">Loading messages…</div>
               ) : (
-                messages.map((m) => (
-                  <MessageBubble
-                    key={m.id}
-                    message={m}
-                    onShowSources={(t) => {
-                      setSourcesTrace(t)
-                      setSourcesOpen(true)
-                    }}
-                    showSourcesAction={
-                      m.role === 'assistant' &&
-                      Boolean(
-                        m.retrieval_trace &&
-                          (m.retrieval_trace.docs_hits.length > 0 ||
-                            m.retrieval_trace.chat_hits.length > 0),
-                      )
-                    }
-                  />
-                ))
+                messages.map((m) => {
+                  const forMsg = proposals.filter((p) => p.message_id === m.id)
+                  const busy = acceptProposal.isPending || rejectProposal.isPending
+                  return (
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      onShowSources={(t) => {
+                        setSourcesTrace(t)
+                        setSourcesOpen(true)
+                      }}
+                      showSourcesAction={
+                        m.role === 'assistant' &&
+                        Boolean(
+                          m.retrieval_trace &&
+                            (m.retrieval_trace.docs_hits.length > 0 ||
+                              m.retrieval_trace.chat_hits.length > 0),
+                        )
+                      }
+                      appendix={
+                        m.role === 'assistant' ? (
+                          <>
+                            {m.memories_captured > 0 ? (
+                              <p className="chat-memory-hint" role="status">
+                                Saved {m.memories_captured}{' '}
+                                {m.memories_captured === 1 ? 'memory' : 'memories'} — view in
+                                Settings.
+                              </p>
+                            ) : null}
+                            {forMsg.map((p) => (
+                              <ProposalCard
+                                key={p.id}
+                                proposal={p}
+                                busy={busy}
+                                onAcceptReminder={(prop) => setReminderTarget(prop)}
+                                onAcceptSuggestion={(prop) => {
+                                  void acceptProposal.mutateAsync({ proposalId: prop.id })
+                                }}
+                                onReject={(id) => rejectProposal.mutate(id)}
+                              />
+                            ))}
+                          </>
+                        ) : undefined
+                      }
+                    />
+                  )
+                })
               )}
               {showStreamingPlaceholder ? (
                 <div className="chat-message-row chat-message-row-assistant">
@@ -361,6 +411,23 @@ export function Chat() {
         onClose={() => {
           setSourcesOpen(false)
           setSourcesTrace(null)
+        }}
+      />
+
+      <AcceptReminderDialog
+        open={reminderTarget !== null}
+        payload={
+          reminderTarget && reminderTarget.type === 'reminder' && 'due_at' in reminderTarget.payload
+            ? reminderTarget.payload
+            : null
+        }
+        isPending={acceptProposal.isPending}
+        onClose={() => setReminderTarget(null)}
+        onConfirm={(edited) => {
+          if (!reminderTarget) return
+          void acceptProposal
+            .mutateAsync({ proposalId: reminderTarget.id, edited })
+            .then(() => setReminderTarget(null))
         }}
       />
     </div>

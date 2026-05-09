@@ -13,6 +13,9 @@ import type {
   Message,
   AssistantTurn,
   ChatStreamEvent,
+  Proposal,
+  ReminderPayload,
+  Memory,
 } from '@bestfriend/core'
 
 const notImplemented = (): Promise<never> =>
@@ -114,10 +117,12 @@ const api: WindowApi = {
     return () => ipcRenderer.removeListener('chat:stream', handler)
   },
 
-  // Proposals (Phase 4)
-  listProposals: () => notImplemented(),
-  acceptProposal: () => notImplemented(),
-  rejectProposal: () => notImplemented(),
+  listProposals: (conversationId: string): Promise<Proposal[]> =>
+    ipcRenderer.invoke('proposals:list', conversationId) as Promise<Proposal[]>,
+  acceptProposal: (proposalId: string, edited?: Partial<ReminderPayload>): Promise<void> =>
+    ipcRenderer.invoke('proposals:accept', proposalId, edited ?? null) as Promise<void>,
+  rejectProposal: (proposalId: string): Promise<void> =>
+    ipcRenderer.invoke('proposals:reject', proposalId) as Promise<void>,
 
   // Reminders (Phase 5)
   listReminders: () => notImplemented(),
@@ -135,11 +140,14 @@ const api: WindowApi = {
   triageInboxItem: () => notImplemented(),
   openCaptureWindow: () => notImplemented(),
 
-  // Memories (Phase 4)
-  listMemories: () => notImplemented(),
-  updateMemory: () => notImplemented(),
-  pinMemory: () => notImplemented(),
-  deleteMemory: () => notImplemented(),
+  listMemories: (): Promise<Memory[]> =>
+    ipcRenderer.invoke('memories:list') as Promise<Memory[]>,
+  updateMemory: (id: string, content: string): Promise<void> =>
+    ipcRenderer.invoke('memories:update', id, content) as Promise<void>,
+  pinMemory: (id: string, pinned: boolean): Promise<void> =>
+    ipcRenderer.invoke('memories:pin', id, pinned) as Promise<void>,
+  deleteMemory: (id: string): Promise<void> =>
+    ipcRenderer.invoke('memories:delete', id) as Promise<void>,
 
   // Settings
   getSettings: (): Promise<MaskedSettings> =>
