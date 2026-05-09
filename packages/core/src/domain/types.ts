@@ -85,6 +85,7 @@ export interface RetrievedChatChunk {
   role: MessageRole
   score: number
   text: string
+  created_at: string
 }
 
 export interface RetrievalTrace {
@@ -131,6 +132,11 @@ export interface AssistantTurn {
   proposals: Proposal[]
   memories_captured: number
 }
+
+export type ChatStreamEvent =
+  | { type: 'token'; conversationId: string; text: string }
+  | { type: 'complete'; conversationId: string; turn: AssistantTurn }
+  | { type: 'error'; conversationId: string; message: string }
 
 export interface Reminder {
   id: string

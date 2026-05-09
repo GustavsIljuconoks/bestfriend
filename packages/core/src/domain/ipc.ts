@@ -1,5 +1,6 @@
 import type {
   AssistantTurn,
+  ChatStreamEvent,
   Collection,
   ConversationSummary,
   CreatePineconeIndexResult,
@@ -46,6 +47,7 @@ export interface WindowApi {
   createConversation(scopeCollectionIds?: string[]): Promise<{ conversationId: string }>
   listMessages(conversationId: string): Promise<Message[]>
   sendMessage(conversationId: string, text: string): Promise<AssistantTurn>
+  onChatStream(callback: (event: ChatStreamEvent) => void): () => void
 
   // Proposals
   listProposals(conversationId: string): Promise<Proposal[]>

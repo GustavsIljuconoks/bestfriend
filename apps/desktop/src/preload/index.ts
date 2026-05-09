@@ -9,6 +9,10 @@ import type {
   DocumentSummary,
   Collection,
   IndexingEstimate,
+  ConversationSummary,
+  Message,
+  AssistantTurn,
+  ChatStreamEvent,
 } from '@bestfriend/core'
 
 const notImplemented = (): Promise<never> =>
@@ -88,11 +92,27 @@ const api: WindowApi = {
       collectionId,
     ) as Promise<void>,
 
-  // Chat (Phase 3)
-  listConversations: () => notImplemented(),
-  createConversation: () => notImplemented(),
-  listMessages: () => notImplemented(),
-  sendMessage: () => notImplemented(),
+  // Chat
+  listConversations: (): Promise<ConversationSummary[]> =>
+    ipcRenderer.invoke('chat:listConversations') as Promise<ConversationSummary[]>,
+
+  createConversation: (scopeCollectionIds?: string[]): Promise<{ conversationId: string }> =>
+    ipcRenderer.invoke(
+      'chat:createConversation',
+      scopeCollectionIds ?? null,
+    ) as Promise<{ conversationId: string }>,
+
+  listMessages: (conversationId: string): Promise<Message[]> =>
+    ipcRenderer.invoke('chat:listMessages', conversationId) as Promise<Message[]>,
+
+  sendMessage: (conversationId: string, text: string): Promise<AssistantTurn> =>
+    ipcRenderer.invoke('chat:sendMessage', conversationId, text) as Promise<AssistantTurn>,
+
+  onChatStream: (callback: (event: ChatStreamEvent) => void) => {
+    const handler = (_: IpcRendererEvent, event: ChatStreamEvent) => callback(event)
+    ipcRenderer.on('chat:stream', handler)
+    return () => ipcRenderer.removeListener('chat:stream', handler)
+  },
 
   // Proposals (Phase 4)
   listProposals: () => notImplemented(),

@@ -592,22 +592,22 @@ The model produces proposals only via OpenAI tool calls, with strict JSON schema
 - [x] Add per-day spend-cap check in job runner (pause queue and post feed item when exceeded)
 
 ### Phase 3 — RAG Chat with Streaming + Scoping
-- [ ] Implement `conversations` and `messages` SQLite tables (migration 004)
-- [ ] Implement `listConversations` / `createConversation` IPC handlers
-- [ ] Implement Pinecone multi-namespace query helper in `packages/core/providers/pinecone/query.ts`
-- [ ] Implement context assembly in `packages/core/rag/context.ts` (merge, de-dup, cap tokens, build Sources block)
-- [ ] Implement `sendMessage` IPC handler — full RAG pipeline (embed query → retrieve → assemble → stream chat)
-- [ ] Implement OpenAI streaming chat call in `packages/core/providers/openai/chat.ts`
-- [ ] Stream tokens to renderer via IPC push channel; accumulate in renderer without re-renders on every token
-- [ ] Persist assistant message + `retrieval_trace_json` to SQLite after stream completes
-- [ ] Embed user + assistant messages and upsert to `chat_history` Pinecone namespace after each turn
-- [ ] Write `usage_ledger` entries for every chat API call (tokens in + out + estimated cost)
-- [ ] Build Chat renderer screen: conversation list sidebar (left 280 px) + chat area (right flex)
-- [ ] Build chat message list with streaming token rendering (Instrument Serif prose, Geist Mono code)
-- [ ] Build chat composer: resizable textarea, send on Enter/Shift+Enter, disabled while streaming
-- [ ] Build Sources drawer: slide-in panel per assistant message, shows doc chunks + past-chat snippets with scores
-- [ ] Build collection scope selector in new-conversation flow (multi-select chips, "All" default)
-- [ ] Handle `chat_history` namespace filter in retrieval when conversation is scoped
+- [x] Implement `conversations` and `messages` SQLite tables (migration 004)
+- [x] Implement `listConversations` / `createConversation` IPC handlers
+- [x] Implement Pinecone multi-namespace query helper in `packages/core/providers/pinecone/query.ts`
+- [x] Implement context assembly in `packages/core/rag/context.ts` (merge, de-dup, cap tokens, build Sources block)
+- [x] Implement `sendMessage` IPC handler — full RAG pipeline (embed query → retrieve → assemble → stream chat)
+- [x] Implement OpenAI streaming chat call in `packages/core/providers/openai/chat.ts`
+- [x] Stream tokens to renderer via IPC push channel; accumulate in renderer without re-renders on every token
+- [x] Persist assistant message + `retrieval_trace_json` to SQLite after stream completes
+- [x] Embed user + assistant messages and upsert to `chat_history` Pinecone namespace after each turn
+- [x] Write `usage_ledger` entries for every chat API call (tokens in + out + estimated cost)
+- [x] Build Chat renderer screen: conversation list sidebar (left 280 px) + chat area (right flex)
+- [x] Build chat message list with streaming token rendering (Instrument Serif prose, Geist Mono code)
+- [x] Build chat composer: resizable textarea, send on Enter/Shift+Enter, disabled while streaming
+- [x] Build Sources drawer: slide-in panel per assistant message, shows doc chunks + past-chat snippets with scores
+- [x] Build collection scope selector in new-conversation flow (multi-select chips, "All" default)
+- [x] Handle `chat_history` namespace filter in retrieval when conversation is scoped
 
 ### Phase 4 — Proposals + Memories via Tool Calls
 - [ ] Define strict JSON schemas for `propose_reminder`, `propose_suggestion`, `remember_about_user` tools in `packages/core/rag/tools.ts`

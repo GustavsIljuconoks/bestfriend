@@ -12,6 +12,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { initDb, closeDb } from './db/index.js'
 import { registerSettingsHandlers } from './ipc/settings.js'
 import { registerLibraryHandlers } from './ipc/library.js'
+import { registerChatHandlers } from './ipc/chat.js'
 import { initJobQueue } from './jobs/JobQueue.js'
 
 interface WindowBounds {
@@ -182,6 +183,7 @@ function registerIpcHandlers(win: BrowserWindow): void {
   ipcMain.handle('ping', () => 'pong')
   registerSettingsHandlers()
   registerLibraryHandlers()
+  registerChatHandlers(win)
   initJobQueue(() => win.webContents)
 }
 

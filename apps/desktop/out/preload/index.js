@@ -45,11 +45,19 @@ const api = {
     documentId,
     collectionId
   ),
-  // Chat (Phase 3)
-  listConversations: () => notImplemented(),
-  createConversation: () => notImplemented(),
-  listMessages: () => notImplemented(),
-  sendMessage: () => notImplemented(),
+  // Chat
+  listConversations: () => electron.ipcRenderer.invoke("chat:listConversations"),
+  createConversation: (scopeCollectionIds) => electron.ipcRenderer.invoke(
+    "chat:createConversation",
+    scopeCollectionIds ?? null
+  ),
+  listMessages: (conversationId) => electron.ipcRenderer.invoke("chat:listMessages", conversationId),
+  sendMessage: (conversationId, text) => electron.ipcRenderer.invoke("chat:sendMessage", conversationId, text),
+  onChatStream: (callback) => {
+    const handler = (_, event) => callback(event);
+    electron.ipcRenderer.on("chat:stream", handler);
+    return () => electron.ipcRenderer.removeListener("chat:stream", handler);
+  },
   // Proposals (Phase 4)
   listProposals: () => notImplemented(),
   acceptProposal: () => notImplemented(),

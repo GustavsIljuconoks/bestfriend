@@ -143,6 +143,36 @@ const migration003 = {
     `);
   }
 };
+const migration004 = {
+  version: 4,
+  name: "004_conversations_and_messages",
+  up(db) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        scope_collection_ids_json TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        retrieval_trace_json TEXT,
+        pinecone_vector_id TEXT
+      )
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+      ON messages (conversation_id, created_at)
+    `);
+  }
+};
 let _db = null;
 function getDb() {
   if (!_db) throw new Error("Database not initialized — call initDb() first");
@@ -155,7 +185,7 @@ function initDb() {
   _db.pragma("journal_mode = WAL");
   _db.pragma("foreign_keys = ON");
   _db.pragma("busy_timeout = 5000");
-  runMigrations(_db, [migration001, migration002, migration003]);
+  runMigrations(_db, [migration001, migration002, migration003, migration004]);
   return _db;
 }
 function closeDb() {
@@ -199,6 +229,7 @@ const DEFAULT_SETTINGS = {
     list_name: "Bestfriend"
   }
 };
+const MAX_CHAT_USER_MESSAGE_CHARS = 64e3;
 function __classPrivateFieldSet(receiver, state, value, kind, f) {
   if (typeof state === "function" ? receiver !== state || true : !state.has(receiver))
     throw new TypeError("Cannot write private member to an object whose class did not declare it");
@@ -9012,6 +9043,32 @@ async function embedBatch(client, texts, model = "text-embedding-3-small") {
   return {
     embeddings: ordered.map((item) => item.embedding),
     total_tokens: response.usage.total_tokens
+  };
+}
+async function streamChatCompletion(client, params, onDelta) {
+  const stream = client.chat.completions.stream({
+    model: params.model,
+    messages: params.messages,
+    stream: true,
+    stream_options: { include_usage: true }
+  });
+  let fullText = "";
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) {
+      fullText += delta;
+      onDelta(delta);
+    }
+  }
+  const final = await stream.finalChatCompletion();
+  const u = final.usage;
+  return {
+    fullText,
+    usage: u ? {
+      prompt_tokens: u.prompt_tokens,
+      completion_tokens: u.completion_tokens,
+      total_tokens: u.total_tokens
+    } : null
   };
 }
 var commonjsGlobal = typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : {};
@@ -25969,6 +26026,84 @@ async function deleteVectorsByIds(index, namespace, ids) {
     await index.namespace(namespace).deleteMany({ ids: batch });
   }
 }
+function metaVal(meta, key) {
+  if (!meta || !(key in meta)) return void 0;
+  return meta[key];
+}
+function asNonEmptyString(v) {
+  if (typeof v === "string" && v.length > 0) return v;
+  if (typeof v === "number" && !Number.isNaN(v)) return String(v);
+  return null;
+}
+function asChunkIndex(v) {
+  if (typeof v === "number" && Number.isFinite(v)) return Math.floor(v);
+  if (typeof v === "string") {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+async function queryDocsForRag(index, queryVector, topK, scopeCollectionIds) {
+  const base2 = {
+    vector: queryVector,
+    topK,
+    includeMetadata: true
+  };
+  const res = scopeCollectionIds.length > 0 ? await index.namespace("docs").query({
+    ...base2,
+    filter: { collection_ids: { $in: scopeCollectionIds } }
+  }) : await index.namespace("docs").query(base2);
+  const out = [];
+  for (const m of res.matches) {
+    const meta = m.metadata;
+    const chunkId = asNonEmptyString(metaVal(meta, "chunk_id"));
+    const documentId = asNonEmptyString(metaVal(meta, "document_id"));
+    const filename = asNonEmptyString(metaVal(meta, "filename")) ?? "document";
+    const text = asNonEmptyString(metaVal(meta, "text")) ?? "";
+    if (!chunkId || !documentId) continue;
+    out.push({
+      chunk_id: chunkId,
+      document_id: documentId,
+      document_name: filename,
+      chunk_index: asChunkIndex(metaVal(meta, "chunk_index")),
+      score: m.score ?? 0,
+      text
+    });
+  }
+  return out;
+}
+async function queryChatHistoryForRag(index, queryVector, topK, conversationId, scopeToCurrentConversation) {
+  const base2 = {
+    vector: queryVector,
+    topK,
+    includeMetadata: true
+  };
+  const res = scopeToCurrentConversation ? await index.namespace("chat_history").query({
+    ...base2,
+    filter: { conversation_id: { $eq: conversationId } }
+  }) : await index.namespace("chat_history").query(base2);
+  const out = [];
+  for (const m of res.matches) {
+    const meta = m.metadata;
+    const messageId = asNonEmptyString(metaVal(meta, "message_id"));
+    const convId = asNonEmptyString(metaVal(meta, "conversation_id"));
+    const text = asNonEmptyString(metaVal(meta, "text")) ?? "";
+    const createdAt = asNonEmptyString(metaVal(meta, "created_at")) ?? (/* @__PURE__ */ new Date()).toISOString();
+    const roleRaw = asNonEmptyString(metaVal(meta, "role"));
+    if (!messageId || !convId || !roleRaw) continue;
+    const role = roleRaw === "assistant" || roleRaw === "user" ? roleRaw : "user";
+    out.push({
+      id: m.id,
+      score: m.score ?? 0,
+      message_id: messageId,
+      conversation_id: convId,
+      role,
+      text,
+      created_at: createdAt
+    });
+  }
+  return out;
+}
 function sha256File(filePath) {
   const buffer = require$$3$1.readFileSync(filePath);
   return crypto$1.createHash("sha256").update(buffer).digest("hex");
@@ -25978,6 +26113,16 @@ function estimateTokens(text) {
 }
 function estimateTokensFromBytes(bytes) {
   return Math.ceil(bytes / 4);
+}
+function estimateChatCompletionCostUsd(promptTokens, completionTokens, model) {
+  const perMillion = {
+    "gpt-4o": { in: 2.5, out: 10 },
+    "gpt-4o-mini": { in: 0.15, out: 0.6 },
+    "gpt-4.1": { in: 2, out: 8 },
+    "gpt-4.1-mini": { in: 0.4, out: 1.6 }
+  };
+  const p = perMillion[model] ?? { in: 2.5, out: 10 };
+  return promptTokens / 1e6 * p.in + completionTokens / 1e6 * p.out;
 }
 function estimateEmbeddingCostUsd(tokens, model = "text-embedding-3-small") {
   const pricePerMillion = {
@@ -26103,6 +26248,78 @@ function splitLargeParagraph(para, documentId, startIndex, targetTokens) {
   }
   flush();
   return chunks;
+}
+function mergeDedupeAndCapSources(docsHits, chatHits, maxSourceTokens) {
+  const sortedDocs = [...docsHits].sort((a, b) => b.score - a.score);
+  const sortedChat = [...chatHits].sort((a, b) => b.score - a.score);
+  const seenChunks = /* @__PURE__ */ new Set();
+  const docsAcc = [];
+  for (const h of sortedDocs) {
+    if (seenChunks.has(h.chunk_id)) continue;
+    seenChunks.add(h.chunk_id);
+    docsAcc.push(h);
+  }
+  const seenMessages = /* @__PURE__ */ new Set();
+  const chatAcc = [];
+  for (const h of sortedChat) {
+    if (seenMessages.has(h.message_id)) continue;
+    seenMessages.add(h.message_id);
+    chatAcc.push(h);
+  }
+  let budget = maxSourceTokens;
+  const docsOut = [];
+  for (const d of docsAcc) {
+    const overhead = estimateTokens(`[doc:${d.document_name}#${d.chunk_index}]`) + 8;
+    const t = estimateTokens(d.text) + overhead;
+    if (t > budget) continue;
+    docsOut.push(d);
+    budget -= t;
+  }
+  const chatsOut = [];
+  for (const c of chatAcc) {
+    const label = `[chat:${c.conversation_title}@${c.created_at.slice(0, 10)}]`;
+    const overhead = estimateTokens(label) + 8;
+    const t = estimateTokens(c.text) + overhead;
+    if (t > budget) continue;
+    chatsOut.push(c);
+    budget -= t;
+  }
+  const lines = ["## Sources (retrieved)"];
+  for (const d of docsOut) {
+    lines.push(
+      `[doc:${d.document_name}#${d.chunk_index}] score=${d.score.toFixed(4)}`,
+      d.text,
+      ""
+    );
+  }
+  for (const c of chatsOut) {
+    lines.push(
+      `[chat:${c.conversation_title}@${c.created_at.slice(0, 10)}] score=${c.score.toFixed(4)} role=${c.role}`,
+      c.text,
+      ""
+    );
+  }
+  return {
+    trace: { docs_hits: docsOut, chat_hits: chatsOut },
+    sourcesBlock: lines.join("\n")
+  };
+}
+function buildRagSystemPreamble(profileLines, sourcesBlock) {
+  const parts = [
+    "You are Bestfriend, a helpful personal assistant with access to the user library and past chats.",
+    "When Sources are relevant, use them and cite with [doc:filename#chunkIndex] or [chat:title@YYYY-MM-DD].",
+    ...profileLines,
+    sourcesBlock
+  ].filter((p) => p.length > 0);
+  return parts.join("\n\n");
+}
+function toOpenAiHistory(messages) {
+  return messages.map(
+    (m) => m.role === "user" ? { role: "user", content: m.content } : { role: "assistant", content: m.content }
+  );
+}
+function maxSourceTokenBudget(retrievalChunkSize) {
+  return Math.min(8e3, Math.max(2e3, retrievalChunkSize * 12));
 }
 function getSettingJson(db, key, fallback) {
   const row = db.prepare("SELECT value_json FROM settings WHERE key = ?").get(key);
@@ -26870,7 +27087,7 @@ function getSupportedFilesInFolder(folderPath) {
     return [];
   }
 }
-function validateString(value, name2) {
+function validateString$1(value, name2) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${name2} must be a non-empty string`);
   }
@@ -26893,7 +27110,7 @@ function registerLibraryHandlers() {
   electron.ipcMain.handle(
     "library:addFolderIndex",
     async (_event, rawPath) => {
-      const path2 = validateString(rawPath, "path");
+      const path2 = validateString$1(rawPath, "path");
       const repo = new FolderIndexRepo(getDb());
       const folderIndex = repo.create(path2);
       return { indexId: folderIndex.id };
@@ -26902,7 +27119,7 @@ function registerLibraryHandlers() {
   electron.ipcMain.handle(
     "library:scanFolder",
     async (_event, rawIndexId) => {
-      const indexId = validateString(rawIndexId, "indexId");
+      const indexId = validateString$1(rawIndexId, "indexId");
       const db = getDb();
       const repo = new FolderIndexRepo(db);
       const folderIndex = repo.getById(indexId);
@@ -26941,7 +27158,7 @@ function registerLibraryHandlers() {
   electron.ipcMain.handle(
     "library:removeDocument",
     async (_event, rawId) => {
-      const documentId = validateString(rawId, "documentId");
+      const documentId = validateString$1(rawId, "documentId");
       const db = getDb();
       await removeDocumentVectors(db, documentId);
       new ChunkRepo(db).deleteByDocument(documentId);
@@ -26951,7 +27168,7 @@ function registerLibraryHandlers() {
   electron.ipcMain.handle(
     "library:reindexDocument",
     async (_event, rawId) => {
-      const documentId = validateString(rawId, "documentId");
+      const documentId = validateString$1(rawId, "documentId");
       const db = getDb();
       const doc = new DocumentRepo(db).getById(documentId);
       if (!doc) throw new Error(`Document ${documentId} not found`);
@@ -26969,37 +27186,426 @@ function registerLibraryHandlers() {
   electron.ipcMain.handle(
     "library:createCollection",
     async (_event, rawName, rawColor) => {
-      const name2 = validateString(rawName, "name");
-      const color = rawColor != null ? validateString(rawColor, "color") : void 0;
+      const name2 = validateString$1(rawName, "name");
+      const color = rawColor != null ? validateString$1(rawColor, "color") : void 0;
       return new CollectionRepo(getDb()).create(name2, color);
     }
   );
   electron.ipcMain.handle(
     "library:renameCollection",
     async (_event, rawId, rawName) => {
-      const id = validateString(rawId, "id");
-      const name2 = validateString(rawName, "name");
+      const id = validateString$1(rawId, "id");
+      const name2 = validateString$1(rawName, "name");
       new CollectionRepo(getDb()).rename(id, name2);
     }
   );
   electron.ipcMain.handle("library:deleteCollection", async (_event, rawId) => {
-    const id = validateString(rawId, "id");
+    const id = validateString$1(rawId, "id");
     new CollectionRepo(getDb()).delete(id);
   });
   electron.ipcMain.handle(
     "library:assignDocumentToCollection",
     async (_event, rawDocId, rawColId) => {
-      const documentId = validateString(rawDocId, "documentId");
-      const collectionId = validateString(rawColId, "collectionId");
+      const documentId = validateString$1(rawDocId, "documentId");
+      const collectionId = validateString$1(rawColId, "collectionId");
       new CollectionRepo(getDb()).assignDocument(documentId, collectionId);
     }
   );
   electron.ipcMain.handle(
     "library:removeDocumentFromCollection",
     async (_event, rawDocId, rawColId) => {
-      const documentId = validateString(rawDocId, "documentId");
-      const collectionId = validateString(rawColId, "collectionId");
+      const documentId = validateString$1(rawDocId, "documentId");
+      const collectionId = validateString$1(rawColId, "collectionId");
       new CollectionRepo(getDb()).removeDocument(documentId, collectionId);
+    }
+  );
+}
+class ConversationRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  create(scopeCollectionIds) {
+    const id = crypto$1.randomUUID();
+    const scopeJson = scopeCollectionIds.length > 0 ? JSON.stringify(scopeCollectionIds) : null;
+    this.db.prepare(`
+        INSERT INTO conversations (id, title, scope_collection_ids_json)
+        VALUES (?, 'New chat', ?)
+      `).run(id, scopeJson);
+    return { id };
+  }
+  getById(id) {
+    const row = this.db.prepare("SELECT * FROM conversations WHERE id = ?").get(id);
+    if (!row) return void 0;
+    return {
+      id: row.id,
+      title: row.title,
+      scope_collection_ids: parseScope(row.scope_collection_ids_json),
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    };
+  }
+  getTitle(id) {
+    const row = this.db.prepare("SELECT title FROM conversations WHERE id = ?").get(id);
+    return row?.title;
+  }
+  listSummaries() {
+    const rows = this.db.prepare(
+      `
+        SELECT c.*,
+          (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+          (SELECT MAX(m2.created_at) FROM messages m2 WHERE m2.conversation_id = c.id) AS last_message_at
+        FROM conversations c
+        ORDER BY COALESCE(last_message_at, c.updated_at) DESC
+      `
+    ).all();
+    return rows.map((r) => ({
+      id: r.id,
+      title: r.title,
+      scope_collection_ids: parseScope(r.scope_collection_ids_json),
+      last_message_at: r.last_message_at,
+      message_count: r.message_count
+    }));
+  }
+  touchUpdated(id) {
+    this.db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(id);
+  }
+  setTitleIfDefault(id, title) {
+    this.db.prepare(
+      `
+        UPDATE conversations SET title = ?, updated_at = datetime('now')
+        WHERE id = ? AND title = 'New chat'
+      `
+    ).run(title, id);
+  }
+}
+function parseScope(json) {
+  if (json == null || json === "") return [];
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+class MessageRepo {
+  constructor(db) {
+    this.db = db;
+  }
+  insert(params) {
+    const id = crypto$1.randomUUID();
+    const createdAt = (/* @__PURE__ */ new Date()).toISOString();
+    const traceJson = params.retrievalTrace != null ? JSON.stringify(params.retrievalTrace) : null;
+    this.db.prepare(`
+        INSERT INTO messages (id, conversation_id, role, content, retrieval_trace_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, params.conversationId, params.role, params.content, traceJson, createdAt);
+    return {
+      id,
+      conversation_id: params.conversationId,
+      role: params.role,
+      content: params.content,
+      created_at: createdAt,
+      retrieval_trace: params.retrievalTrace
+    };
+  }
+  setPineconeVectorId(messageId, vectorId) {
+    this.db.prepare(`UPDATE messages SET pinecone_vector_id = ? WHERE id = ?`).run(vectorId, messageId);
+  }
+  deleteById(messageId) {
+    this.db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId);
+  }
+  listByConversation(conversationId) {
+    const rows = this.db.prepare(
+      `
+        SELECT * FROM messages
+        WHERE conversation_id = ?
+        ORDER BY datetime(created_at) ASC
+      `
+    ).all(conversationId);
+    return rows.map(rowToMessage);
+  }
+  getRecentForApi(conversationId, limit2) {
+    const rows = this.db.prepare(
+      `
+        SELECT * FROM messages
+        WHERE conversation_id = ? AND role IN ('user', 'assistant')
+        ORDER BY datetime(created_at) DESC
+        LIMIT ?
+      `
+    ).all(conversationId, limit2);
+    return rows.reverse().map(rowToMessage);
+  }
+}
+function rowToMessage(row) {
+  let retrieval_trace = null;
+  if (row.retrieval_trace_json) {
+    try {
+      retrieval_trace = JSON.parse(row.retrieval_trace_json);
+    } catch {
+      retrieval_trace = null;
+    }
+  }
+  return {
+    id: row.id,
+    conversation_id: row.conversation_id,
+    role: row.role,
+    content: row.content,
+    created_at: row.created_at,
+    retrieval_trace
+  };
+}
+function validateString(value, name2) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${name2} must be a non-empty string`);
+  }
+  return value.trim();
+}
+function validateChatMessageText(value) {
+  const text = validateString(value, "text");
+  if (text.length > MAX_CHAT_USER_MESSAGE_CHARS) {
+    throw new Error(
+      `Message is too long (max ${MAX_CHAT_USER_MESSAGE_CHARS} characters, got ${text.length})`
+    );
+  }
+  return text;
+}
+function validateOptionalScopeIds(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error("scopeCollectionIds must be an array of strings");
+  const out = [];
+  for (const v of value) {
+    if (typeof v !== "string" || v.trim() === "") {
+      throw new Error("scopeCollectionIds must be an array of strings");
+    }
+    out.push(v.trim());
+  }
+  return out;
+}
+function assertCollectionsExist(db, ids) {
+  if (ids.length === 0) return;
+  const repo = new CollectionRepo(db);
+  const known = new Set(repo.listAll().map((c) => c.id));
+  for (const id of ids) {
+    if (!known.has(id)) throw new Error(`Collection ${id} not found`);
+  }
+}
+function rollbackPartialTurn(msgRepo, userMessageId, assistantMessageId) {
+  if (assistantMessageId) msgRepo.deleteById(assistantMessageId);
+  msgRepo.deleteById(userMessageId);
+}
+function registerChatHandlers(win) {
+  const sendStream = (payload) => {
+    if (!win.isDestroyed()) {
+      win.webContents.send("chat:stream", payload);
+    }
+  };
+  electron.ipcMain.handle("chat:listConversations", async () => {
+    return new ConversationRepo(getDb()).listSummaries();
+  });
+  electron.ipcMain.handle(
+    "chat:createConversation",
+    async (_e, rawScope) => {
+      const db = getDb();
+      const scopeIds = validateOptionalScopeIds(rawScope);
+      assertCollectionsExist(db, scopeIds);
+      const created = new ConversationRepo(db).create(scopeIds);
+      return { conversationId: created.id };
+    }
+  );
+  electron.ipcMain.handle("chat:listMessages", async (_e, rawConvId) => {
+    const conversationId = validateString(rawConvId, "conversationId");
+    const conv = new ConversationRepo(getDb()).getById(conversationId);
+    if (!conv) throw new Error(`Conversation ${conversationId} not found`);
+    return new MessageRepo(getDb()).listByConversation(conversationId);
+  });
+  electron.ipcMain.handle(
+    "chat:sendMessage",
+    async (_e, rawConvId, rawText) => {
+      const conversationId = validateString(rawConvId, "conversationId");
+      const text = validateChatMessageText(rawText);
+      const db = getDb();
+      const convRepo = new ConversationRepo(db);
+      const msgRepo = new MessageRepo(db);
+      const settingsRepo = new SettingsRepo(db);
+      const ledgerRepo = new UsageLedgerRepo(db);
+      const conv = convRepo.getById(conversationId);
+      if (!conv) throw new Error(`Conversation ${conversationId} not found`);
+      const { models: models2, retrieval, spend } = settingsRepo.loadNonSecretSettings();
+      const todaySpend = ledgerRepo.todayTotalUsd();
+      if (spend.daily_cap_usd > 0 && todaySpend >= spend.daily_cap_usd) {
+        throw new Error(
+          `Daily spend cap of $${spend.daily_cap_usd.toFixed(2)} reached ($${todaySpend.toFixed(2)} spent today).`
+        );
+      }
+      const openaiKey = retrieveKey("openai");
+      const pineconeKey = retrieveKey("pinecone");
+      if (!openaiKey) throw new Error("OpenAI API key is not configured");
+      if (!pineconeKey) throw new Error("Pinecone API key is not configured");
+      const catalogEntry = EMBEDDING_MODEL_CATALOG.find((e) => e.id === models2.embeddings_model);
+      const embeddingModel = catalogEntry?.id ?? "text-embedding-3-small";
+      const userMsg = msgRepo.insert({
+        conversationId,
+        role: "user",
+        content: text,
+        retrievalTrace: null
+      });
+      convRepo.touchUpdated(conversationId);
+      let assistantMessageId = null;
+      try {
+        const openai = createOpenAIClient(openaiKey);
+        const pinecone2 = createPineconeClient(pineconeKey);
+        const pineconeIndex = pinecone2.index(DEFAULT_PINECONE_INDEX_NAME);
+        const queryEmbedding = await embedBatch(openai, [text], embeddingModel);
+        const embedQueryCost = estimateEmbeddingCostUsd(queryEmbedding.total_tokens, embeddingModel);
+        ledgerRepo.record({
+          provider: "openai",
+          kind: "embed",
+          tokens_in: queryEmbedding.total_tokens,
+          tokens_out: null,
+          units: null,
+          est_cost_usd: embedQueryCost
+        });
+        const queryVector = queryEmbedding.embeddings[0];
+        if (!queryVector?.length) throw new Error("Embedding failed");
+        const scopeIds = conv.scope_collection_ids;
+        const scopeActive = scopeIds.length > 0;
+        const [rawDocs, rawChat] = await Promise.all([
+          queryDocsForRag(pineconeIndex, queryVector, retrieval.top_k_docs, scopeIds),
+          queryChatHistoryForRag(
+            pineconeIndex,
+            queryVector,
+            retrieval.top_k_chat,
+            conversationId,
+            scopeActive
+          )
+        ]);
+        const getTitle = (id) => convRepo.getTitle(id);
+        const chatHits = rawChat.map((h) => ({
+          message_id: h.message_id,
+          conversation_id: h.conversation_id,
+          conversation_title: getTitle(h.conversation_id) ?? "Chat",
+          role: h.role,
+          score: h.score,
+          text: h.text,
+          created_at: h.created_at
+        }));
+        const tokenBudget = maxSourceTokenBudget(retrieval.chunk_size_tokens);
+        const { trace, sourcesBlock } = mergeDedupeAndCapSources(rawDocs, chatHits, tokenBudget);
+        const profile = settingsRepo.loadProfile();
+        const profileLines = [
+          profile.name ? `User name: ${profile.name}` : "",
+          profile.role ? `User role: ${profile.role}` : "",
+          profile.timezone ? `Timezone: ${profile.timezone}` : "",
+          profile.tone_preferences ? `Tone preferences: ${profile.tone_preferences}` : "",
+          profile.current_projects.length > 0 ? `Current projects: ${profile.current_projects.join(", ")}` : ""
+        ].filter((line) => line.length > 0);
+        const systemContent = buildRagSystemPreamble(profileLines, sourcesBlock);
+        const historyRows = msgRepo.getRecentForApi(conversationId, 48);
+        const historyParams = toOpenAiHistory(
+          historyRows.flatMap(
+            (m) => m.role === "user" || m.role === "assistant" ? [{ role: m.role, content: m.content }] : []
+          )
+        );
+        const openaiMessages = [{ role: "system", content: systemContent }, ...historyParams];
+        const result = await streamChatCompletion(
+          openai,
+          { model: models2.chat_model, messages: openaiMessages },
+          (delta) => {
+            sendStream({ type: "token", conversationId, text: delta });
+          }
+        );
+        const usage = result.usage;
+        let promptTokens = usage?.prompt_tokens ?? 0;
+        let completionTokens = usage?.completion_tokens ?? 0;
+        if (!usage) {
+          promptTokens = estimateTokens(systemContent) + historyParams.reduce(
+            (s, m) => s + estimateTokens(typeof m.content === "string" ? m.content : ""),
+            0
+          );
+          completionTokens = estimateTokens(result.fullText);
+        }
+        const chatCost = estimateChatCompletionCostUsd(
+          promptTokens,
+          completionTokens,
+          models2.chat_model
+        );
+        ledgerRepo.record({
+          provider: "openai",
+          kind: "chat",
+          tokens_in: promptTokens,
+          tokens_out: completionTokens,
+          units: null,
+          est_cost_usd: chatCost
+        });
+        const assistantMsg = msgRepo.insert({
+          conversationId,
+          role: "assistant",
+          content: result.fullText,
+          retrievalTrace: trace
+        });
+        assistantMessageId = assistantMsg.id;
+        const previewTitle = text.length > 56 ? `${text.slice(0, 53).trimEnd()}…` : text;
+        convRepo.setTitleIfDefault(conversationId, previewTitle);
+        convRepo.touchUpdated(conversationId);
+        const embedTurn = await embedBatch(
+          openai,
+          [userMsg.content, result.fullText],
+          embeddingModel
+        );
+        const turnEmbedCost = estimateEmbeddingCostUsd(embedTurn.total_tokens, embeddingModel);
+        ledgerRepo.record({
+          provider: "openai",
+          kind: "embed",
+          tokens_in: embedTurn.total_tokens,
+          tokens_out: null,
+          units: null,
+          est_cost_usd: turnEmbedCost
+        });
+        const embUser = embedTurn.embeddings[0];
+        const embAssistant = embedTurn.embeddings[1];
+        if (!embUser?.length || !embAssistant?.length) {
+          throw new Error("Embedding API returned empty vectors for chat history");
+        }
+        const clip = (s) => s.length > 8e3 ? s.slice(0, 8e3) : s;
+        await upsertVectors(pineconeIndex, "chat_history", [
+          {
+            id: `msg::${userMsg.id}`,
+            embedding: embUser,
+            metadata: {
+              message_id: userMsg.id,
+              conversation_id: conversationId,
+              role: "user",
+              created_at: userMsg.created_at,
+              text: clip(userMsg.content)
+            }
+          },
+          {
+            id: `msg::${assistantMsg.id}`,
+            embedding: embAssistant,
+            metadata: {
+              message_id: assistantMsg.id,
+              conversation_id: conversationId,
+              role: "assistant",
+              created_at: assistantMsg.created_at,
+              text: clip(result.fullText)
+            }
+          }
+        ]);
+        msgRepo.setPineconeVectorId(userMsg.id, `msg::${userMsg.id}`);
+        msgRepo.setPineconeVectorId(assistantMsg.id, `msg::${assistantMsg.id}`);
+        const turn = {
+          message: assistantMsg,
+          proposals: [],
+          memories_captured: 0
+        };
+        sendStream({ type: "complete", conversationId, turn });
+        return turn;
+      } catch (err) {
+        rollbackPartialTurn(msgRepo, userMsg.id, assistantMessageId);
+        const message = err instanceof Error ? err.message : String(err);
+        sendStream({ type: "error", conversationId, message });
+        throw err;
+      }
     }
   );
 }
@@ -27148,6 +27754,7 @@ function registerIpcHandlers(win) {
   electron.ipcMain.handle("ping", () => "pong");
   registerSettingsHandlers();
   registerLibraryHandlers();
+  registerChatHandlers(win);
   initJobQueue(() => win.webContents);
 }
 function sendTheme(win) {
